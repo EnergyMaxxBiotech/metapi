@@ -4,6 +4,7 @@ import { SortableContext } from '@dnd-kit/sortable';
 
 const sortableState = vi.hoisted(() => ({
   activeId: null as number | string | null,
+  listenerCalls: [] as Array<number | string>,
 }));
 
 vi.mock('@dnd-kit/sortable', async () => {
@@ -11,8 +12,10 @@ vi.mock('@dnd-kit/sortable', async () => {
   return {
     ...actual,
     useSortable: ({ id }: { id: number | string }) => ({
-      attributes: {},
-      listeners: {},
+      attributes: { 'data-sortable-id': String(id) },
+      listeners: {
+        onPointerDown: () => sortableState.listenerCalls.push(id),
+      },
       setNodeRef: vi.fn(),
       setActivatorNodeRef: vi.fn(),
       transform: null,
@@ -36,6 +39,7 @@ function collectText(node: ReactTestInstance): string {
 
 afterEach(() => {
   sortableState.activeId = null;
+  sortableState.listenerCalls = [];
 });
 
 const LONG_REGEX_PATTERN = 're:(?:.*|.*/)(minimax-m2.1)$';
@@ -417,25 +421,97 @@ describe('RouteCard', () => {
     );
 
     const text = collectText(root.root);
-    expect(text).toContain('P0 · 1');
-    expect(text).toContain('P1 · 1');
+    expect(text).toContain('P0');
+    expect(text).toContain('P1');
+    expect(text).not.toContain('P0 · 1');
+    expect(text).not.toContain('P1 · 1');
     expect(text).toContain('user_a');
     expect(text).toContain('user_b');
 
     const p0RailNode = root.root.find((node) => (
-      node.type === 'div'
-      && collectText(node) === 'P0 · 1'
+      node.type === 'button'
+      && node.props['data-testid'] === 'route-priority-drag-handle'
+      && collectText(node) === 'P0'
       && node.props?.style?.borderRadius === 999
     ));
     const p1RailNode = root.root.find((node) => (
-      node.type === 'div'
-      && collectText(node) === 'P1 · 1'
+      node.type === 'button'
+      && node.props['data-testid'] === 'route-priority-drag-handle'
+      && collectText(node) === 'P1'
       && node.props?.style?.borderRadius === 999
     ));
 
     expect(p0RailNode.props.style.background).not.toBe('var(--color-bg)');
     expect(p1RailNode.props.style.background).not.toBe('var(--color-bg)');
-    expect(p0RailNode.props.style.color).not.toBe(p1RailNode.props.style.color);
+    expect(p0RailNode.props.style.color).toBe('var(--color-success)');
+    expect(p1RailNode.props.style.color).toBe('var(--color-success)');
+  });
+
+  it('renders recently unavailable priority labels in red', () => {
+    const root = create(
+      <RouteCard
+        route={buildRoute()}
+        brand={null}
+        expanded
+        onToggleExpand={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onClearCooldown={vi.fn()}
+        clearingCooldown={false}
+        onRoutingStrategyChange={vi.fn()}
+        updatingRoutingStrategy={false}
+        channels={[
+          buildChannel({
+            id: 11,
+            priority: 0,
+            cooldownUntil: new Date(Date.now() + 60_000).toISOString(),
+          }),
+          buildChannel({
+            id: 12,
+            accountId: 102,
+            tokenId: 1002,
+            priority: 1,
+            account: { username: 'user_b' },
+            site: { id: 2, name: 'site-b', platform: 'openai' },
+            token: { id: 1002, name: 'token-b', accountId: 102, enabled: true, isDefault: false },
+          }),
+        ]}
+        loadingChannels={false}
+        routeDecision={null}
+        loadingDecision={false}
+        candidateView={{ routeCandidates: [], accountOptions: [], tokenOptionsByAccountId: {} }}
+        channelTokenDraft={{}}
+        updatingChannel={{}}
+        savingPriority={false}
+        onTokenDraftChange={vi.fn()}
+        onSaveToken={vi.fn()}
+        onDeleteChannel={vi.fn()}
+        onToggleChannelEnabled={vi.fn()}
+        onChannelDragEnd={vi.fn()}
+        missingTokenSiteItems={[]}
+        missingTokenGroupItems={[]}
+        onCreateTokenForMissing={vi.fn()}
+        onAddChannel={vi.fn()}
+        onSiteBlockModel={vi.fn()}
+        expandedSourceGroupMap={{}}
+        onToggleSourceGroup={vi.fn()}
+      />,
+    );
+
+    const p0RailNode = root.root.find((node) => (
+      node.type === 'button'
+      && node.props['data-testid'] === 'route-priority-drag-handle'
+      && collectText(node) === 'P0'
+    ));
+    const p1RailNode = root.root.find((node) => (
+      node.type === 'button'
+      && node.props['data-testid'] === 'route-priority-drag-handle'
+      && collectText(node) === 'P1'
+    ));
+
+    expect(p0RailNode.props.style.color).toBe('var(--color-danger)');
+    expect(p1RailNode.props.style.color).toBe('var(--color-success)');
   });
 
   it('renders oauth route unit summary badges on expanded cards', () => {
@@ -544,6 +620,60 @@ describe('RouteCard', () => {
 
     const sortableContext = root.root.findByType(SortableContext);
     expect(sortableContext.props.strategy).toBe(translateOnlyRectSortingStrategy);
+  });
+
+  it('lets desktop users drag from the visible priority label', () => {
+    const root = create(
+      <RouteCard
+        route={buildRoute()}
+        brand={null}
+        expanded
+        onToggleExpand={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        onClearCooldown={vi.fn()}
+        clearingCooldown={false}
+        onRoutingStrategyChange={vi.fn()}
+        updatingRoutingStrategy={false}
+        channels={[
+          buildChannel({ id: 11, priority: 0 }),
+          buildChannel({ id: 12, accountId: 102, tokenId: 1002, priority: 1 }),
+        ]}
+        loadingChannels={false}
+        routeDecision={null}
+        loadingDecision={false}
+        candidateView={{ routeCandidates: [], accountOptions: [], tokenOptionsByAccountId: {} }}
+        channelTokenDraft={{}}
+        updatingChannel={{}}
+        savingPriority={false}
+        onTokenDraftChange={vi.fn()}
+        onSaveToken={vi.fn()}
+        onDeleteChannel={vi.fn()}
+        onToggleChannelEnabled={vi.fn()}
+        onChannelDragEnd={vi.fn()}
+        missingTokenSiteItems={[]}
+        missingTokenGroupItems={[]}
+        onCreateTokenForMissing={vi.fn()}
+        onAddChannel={vi.fn()}
+        onSiteBlockModel={vi.fn()}
+        expandedSourceGroupMap={{}}
+        onToggleSourceGroup={vi.fn()}
+      />,
+    );
+
+    const visiblePriorityHandle = root.root.find((node) => (
+      node.type === 'button'
+      && node.props['data-testid'] === 'route-priority-drag-handle'
+      && collectText(node).includes('P0')
+    ));
+    expect(visiblePriorityHandle.props['data-sortable-id']).toBe('11');
+
+    act(() => {
+      visiblePriorityHandle.props.onPointerDown();
+    });
+
+    expect(sortableState.listenerCalls).toEqual([11]);
   });
 
   it('shows a new-layer drop target while dragging inside compact desktop detail panels', () => {
@@ -673,8 +803,9 @@ describe('RouteCard', () => {
     ));
 
     expect(bucketHeaders.map((node) => collectText(node))).toEqual([
-      'P0 · 2 通道',
-      'P1 · 1 通道',
+      'P0',
+      'P1',
+      'P2',
     ]);
     expect(shells).toHaveLength(3);
     expect(collectText(shells[0]!)).not.toContain('P0 · 2 通道');

@@ -11,6 +11,7 @@ const getApiTokenMock = vi.fn();
 const createApiTokenMock = vi.fn();
 const getUserGroupsMock = vi.fn();
 const deleteApiTokenMock = vi.fn();
+const refreshModelPricingCatalogMock = vi.fn();
 
 type AccountTokenServiceModule = typeof import('../../services/accountTokenService.js');
 
@@ -24,12 +25,23 @@ vi.mock('../../services/platforms/index.js', () => ({
   }),
 }));
 
+vi.mock('../../services/modelPricingService.js', async () => {
+  const actual = await vi.importActual<typeof import('../../services/modelPricingService.js')>(
+    '../../services/modelPricingService.js',
+  );
+  return {
+    ...actual,
+    refreshModelPricingCatalog: (...args: unknown[]) => refreshModelPricingCatalogMock(...args),
+  };
+});
+
 type DbModule = typeof import('../../db/index.js');
 
 describe('account tokens sync routes with site status', () => {
   let app: FastifyInstance;
   let db: DbModule['db'];
   let schema: DbModule['schema'];
+  let closeDbConnections: DbModule['closeDbConnections'];
   let maskToken: AccountTokenServiceModule['maskToken'];
   let dataDir = '';
   let previousDataDir: string | undefined;
@@ -74,6 +86,7 @@ describe('account tokens sync routes with site status', () => {
     const routesModule = await import('./accountTokens.js');
     db = dbModule.db;
     schema = dbModule.schema;
+    closeDbConnections = dbModule.closeDbConnections;
     maskToken = accountTokenServiceModule.maskToken;
 
     app = Fastify();
@@ -86,6 +99,8 @@ describe('account tokens sync routes with site status', () => {
     createApiTokenMock.mockReset();
     getUserGroupsMock.mockReset();
     deleteApiTokenMock.mockReset();
+    refreshModelPricingCatalogMock.mockReset();
+    refreshModelPricingCatalogMock.mockResolvedValue(null);
     seedId = 0;
 
     await db.delete(schema.accountTokens).run();
@@ -100,6 +115,7 @@ describe('account tokens sync routes with site status', () => {
 
   afterAll(async () => {
     await app.close();
+    await closeDbConnections();
     if (previousDataDir === undefined) {
       delete process.env.DATA_DIR;
     } else {
@@ -221,6 +237,7 @@ describe('account tokens sync routes with site status', () => {
       enabled: true,
       isDefault: true,
       tokenGroup: 'default',
+      billingMultiplier: 0.6,
       valueStatus: 'ready' as any,
     }).run();
 
@@ -257,6 +274,7 @@ describe('account tokens sync routes with site status', () => {
       enabled: true,
       isDefault: true,
       tokenGroup: 'default',
+      billingMultiplier: 0.6,
     });
     expect((tokenRows[0] as any).valueStatus).toBe('ready');
   });
@@ -607,6 +625,7 @@ describe('account tokens sync routes with site status', () => {
         accountId: account.id,
         name: 'manual-default',
         token: 'sk-manual-default-token',
+        billingMultiplier: 0.4,
       },
     });
 
@@ -617,8 +636,151 @@ describe('account tokens sync routes with site status', () => {
         name: 'manual-default',
         isDefault: true,
         enabled: true,
+        billingMultiplier: 0.4,
       }),
     });
+  });
+
+  it('persists billing multiplier when updating a manual account token', async () => {
+    const { account } = await seedAccount({ siteStatus: 'active' });
+    const token = await db.insert(schema.accountTokens).values({
+      accountId: account.id,
+      name: 'manual-token',
+      token: 'sk-manual-token',
+      source: 'manual',
+      enabled: true,
+      isDefault: false,
+    }).returning().get();
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/account-tokens/${token.id}`,
+      payload: {
+        billingMultiplier: 1.8,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      token: expect.objectContaining({
+        id: token.id,
+        billingMultiplier: 1.8,
+      }),
+    });
+
+    const refreshed = await db.select()
+      .from(schema.accountTokens)
+      .where(eq(schema.accountTokens.id, token.id))
+      .get();
+    expect(refreshed?.billingMultiplier).toBe(1.8);
+  });
+
+  it('reprioritizes cheapest routes when a managed token billing multiplier changes', async () => {
+    const { account: accountA } = await seedAccount({ siteStatus: 'active' });
+    const { account: accountB } = await seedAccount({ siteStatus: 'active' });
+    const tokenA = await db.insert(schema.accountTokens).values({
+      accountId: accountA.id,
+      name: 'token-a',
+      token: 'sk-token-a',
+      source: 'manual',
+      enabled: true,
+      isDefault: false,
+      billingMultiplier: 2,
+    }).returning().get();
+    const tokenB = await db.insert(schema.accountTokens).values({
+      accountId: accountB.id,
+      name: 'token-b',
+      token: 'sk-token-b',
+      source: 'manual',
+      enabled: true,
+      isDefault: false,
+      billingMultiplier: 1,
+    }).returning().get();
+    const route = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-token-multiplier-reorder',
+      routingStrategy: 'cheapest',
+      enabled: true,
+    }).returning().get();
+    const channelA = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: accountA.id,
+      tokenId: tokenA.id,
+      sourceModel: 'gpt-5-token-multiplier-reorder',
+      priority: 1,
+      weight: 10,
+      enabled: true,
+      manualOverride: false,
+    }).returning().get();
+    const channelB = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: accountB.id,
+      tokenId: tokenB.id,
+      sourceModel: 'gpt-5-token-multiplier-reorder',
+      priority: 0,
+      weight: 10,
+      enabled: true,
+      manualOverride: false,
+    }).returning().get();
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/account-tokens/${tokenA.id}`,
+      payload: {
+        billingMultiplier: 0.25,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const channels = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, route.id))
+      .all();
+    const byId = new Map(channels.map((channel) => [channel.id, channel]));
+
+    expect(byId.get(channelA.id)?.priority).toBe(0);
+    expect(byId.get(channelB.id)?.priority).toBe(1);
+    expect(byId.get(channelA.id)?.manualOverride).toBe(false);
+    expect(byId.get(channelB.id)?.manualOverride).toBe(false);
+  });
+
+  it('syncs billing multipliers from upstream group pricing when account tokens are synced', async () => {
+    const { account, site } = await seedAccount({ siteStatus: 'active' });
+    getApiTokensMock.mockResolvedValue([
+      { name: 'cheap-group-token', key: 'sk-cheap-upstream-token', enabled: true, tokenGroup: 'cheap' },
+      { name: 'expensive-group-token', key: 'sk-expensive-upstream-token', enabled: true, tokenGroup: 'Expensive' },
+      { name: 'unknown-group-token', key: 'sk-unknown-upstream-token', enabled: true, tokenGroup: 'unknown' },
+    ]);
+    getApiTokenMock.mockResolvedValue(null);
+    refreshModelPricingCatalogMock.mockResolvedValue({
+      models: [],
+      groupRatio: {
+        default: 1,
+        cheap: 0.4,
+        expensive: 1.8,
+      },
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/account-tokens/sync/${account.id}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(refreshModelPricingCatalogMock).toHaveBeenCalledWith(expect.objectContaining({
+      site: expect.objectContaining({ id: site.id }),
+      account: expect.objectContaining({ id: account.id }),
+    }));
+
+    const tokenRows = await db.select()
+      .from(schema.accountTokens)
+      .where(eq(schema.accountTokens.accountId, account.id))
+      .all();
+    const multiplierByGroup = new Map(tokenRows.map((token) => [token.tokenGroup, token.billingMultiplier]));
+
+    expect(multiplierByGroup.get('cheap')).toBe(0.4);
+    expect(multiplierByGroup.get('Expensive')).toBe(1.8);
+    expect(multiplierByGroup.get('unknown')).toBe(1);
   });
 
   it('creates token via upstream api and syncs into local store when manual token is omitted', async () => {

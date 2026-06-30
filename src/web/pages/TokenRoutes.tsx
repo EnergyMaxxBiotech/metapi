@@ -59,6 +59,7 @@ import {
   getModelPatternError,
 } from './token-routes/utils.js';
 import { applyPriorityRailDrop, isPriorityRailNewLayerId } from './token-routes/priorityRail.js';
+import { applyPriorityBucketDrag, isPriorityBucketSeparatorId } from './token-routes/priorityBuckets.js';
 import { useRouteChannels } from './token-routes/useRouteChannels.js';
 import RouteFilterBar, { type EnabledFilter } from './token-routes/RouteFilterBar.js';
 import ManualRoutePanel from './token-routes/ManualRoutePanel.js';
@@ -104,6 +105,7 @@ function prefersReducedMotion(): boolean {
 function getRouteRoutingStrategySuccessMessage(value: RouteRoutingStrategy): string {
   if (value === 'round_robin') return '已切换为轮询策略';
   if (value === 'stable_first') return '已切换为稳定优先策略';
+  if (value === 'cheapest') return '已切换为价格最低策略';
   return '已切换为权重随机策略';
 }
 
@@ -1137,14 +1139,16 @@ export default function TokenRoutes() {
     if (!activeChannel) return;
 
     const overIsNewLayer = isPriorityRailNewLayerId(over.id);
-    const targetChannel = overIsNewLayer
+    const overIsBucketSeparator = isPriorityBucketSeparatorId(over.id);
+    const targetChannel = overIsNewLayer || overIsBucketSeparator
       ? null
       : channels.find((channel) => channel.id === Number(over.id));
 
-    if (!overIsNewLayer && !targetChannel) return;
-    if (!overIsNewLayer && (targetChannel?.priority ?? 0) === (activeChannel.priority ?? 0)) return;
+    if (!overIsNewLayer && !overIsBucketSeparator && !targetChannel) return;
 
-    const reordered = applyPriorityRailDrop(channels, Number(active.id), over.id);
+    const reordered = overIsNewLayer
+      ? applyPriorityRailDrop(channels, Number(active.id), over.id)
+      : applyPriorityBucketDrag(channels, Number(active.id), over.id);
     const changedChannels = reordered.filter((channel) => {
       const previous = channels.find((item) => item.id === channel.id);
       return (previous?.priority ?? 0) !== channel.priority;

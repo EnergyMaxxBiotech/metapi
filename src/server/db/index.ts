@@ -181,6 +181,7 @@ function ensureTokenManagementSchema() {
       name text NOT NULL,
       token text NOT NULL,
       token_group text,
+      billing_multiplier real DEFAULT 1,
       value_status text NOT NULL DEFAULT 'ready',
       source text DEFAULT 'manual',
       enabled integer DEFAULT true,
@@ -194,8 +195,14 @@ function ensureTokenManagementSchema() {
     execSqliteLegacyCompat('ALTER TABLE route_channels ADD COLUMN token_id integer;');
   }
 
+  if (!tableColumnExists('accounts', 'api_token_billing_multiplier')) {
+    execSqliteLegacyCompat('ALTER TABLE accounts ADD COLUMN api_token_billing_multiplier real DEFAULT 1;');
+  }
   if (!tableColumnExists('account_tokens', 'token_group')) {
     execSqliteLegacyCompat('ALTER TABLE account_tokens ADD COLUMN token_group text;');
+  }
+  if (!tableColumnExists('account_tokens', 'billing_multiplier')) {
+    execSqliteLegacyCompat('ALTER TABLE account_tokens ADD COLUMN billing_multiplier real DEFAULT 1;');
   }
   if (!tableColumnExists('account_tokens', 'value_status')) {
     execSqliteLegacyCompat("ALTER TABLE account_tokens ADD COLUMN value_status text NOT NULL DEFAULT 'ready';");

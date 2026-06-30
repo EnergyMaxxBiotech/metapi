@@ -498,6 +498,142 @@ describe('TokenRouter selection scoring', () => {
     expect(expensiveCandidate?.reason || '').toContain('成本=实测');
   });
 
+  it('cheapest applies managed token billing multipliers when comparing effective cost', async () => {
+    const route = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-cheapest-token',
+      routingStrategy: 'cheapest',
+      enabled: true,
+    }).returning().get();
+
+    const cheapSite = await createSite('cheapest-token-cheap');
+    const cheapAccount = await createAccount(cheapSite.id, 'cheapest-token-cheap-user');
+    await db.update(schema.accounts)
+      .set({ unitCost: 1 })
+      .where(eq(schema.accounts.id, cheapAccount.id))
+      .run();
+    const cheapToken = await createToken(cheapAccount.id, 'cheapest-token-cheap');
+    await db.update(schema.accountTokens)
+      .set({ billingMultiplier: 0.5 })
+      .where(eq(schema.accountTokens.id, cheapToken.id))
+      .run();
+    const cheapChannel = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: cheapAccount.id,
+      tokenId: cheapToken.id,
+      priority: 0,
+      weight: 10,
+      enabled: true,
+    }).returning().get();
+
+    const expensiveSite = await createSite('cheapest-token-expensive');
+    const expensiveAccount = await createAccount(expensiveSite.id, 'cheapest-token-expensive-user');
+    await db.update(schema.accounts)
+      .set({ unitCost: 1 })
+      .where(eq(schema.accounts.id, expensiveAccount.id))
+      .run();
+    const expensiveToken = await createToken(expensiveAccount.id, 'cheapest-token-expensive');
+    await db.update(schema.accountTokens)
+      .set({ billingMultiplier: 2 })
+      .where(eq(schema.accountTokens.id, expensiveToken.id))
+      .run();
+    await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: expensiveAccount.id,
+      tokenId: expensiveToken.id,
+      priority: 0,
+      weight: 10,
+      enabled: true,
+    }).run();
+
+    const selected = await new TokenRouter().selectChannel('gpt-5-cheapest-token');
+
+    expect(selected?.channel.id).toBe(cheapChannel.id);
+  });
+
+  it('cheapest applies default API key billing multipliers for tokenless channels', async () => {
+    const route = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-cheapest-default-key',
+      routingStrategy: 'cheapest',
+      enabled: true,
+    }).returning().get();
+
+    const cheapSite = await createSite('cheapest-default-cheap');
+    const cheapAccount = await createAccount(cheapSite.id, 'cheapest-default-cheap-user');
+    await db.update(schema.accounts)
+      .set({ unitCost: 1, apiTokenBillingMultiplier: 0.4 })
+      .where(eq(schema.accounts.id, cheapAccount.id))
+      .run();
+    const cheapChannel = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: cheapAccount.id,
+      tokenId: null,
+      priority: 0,
+      weight: 10,
+      enabled: true,
+    }).returning().get();
+
+    const expensiveSite = await createSite('cheapest-default-expensive');
+    const expensiveAccount = await createAccount(expensiveSite.id, 'cheapest-default-expensive-user');
+    await db.update(schema.accounts)
+      .set({ unitCost: 1, apiTokenBillingMultiplier: 2 })
+      .where(eq(schema.accounts.id, expensiveAccount.id))
+      .run();
+    await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: expensiveAccount.id,
+      tokenId: null,
+      priority: 0,
+      weight: 10,
+      enabled: true,
+    }).run();
+
+    const selected = await new TokenRouter().selectChannel('gpt-5-cheapest-default-key');
+
+    expect(selected?.channel.id).toBe(cheapChannel.id);
+  });
+
+  it('cheapest respects priority buckets before choosing lower effective cost', async () => {
+    const route = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-cheapest-priority',
+      routingStrategy: 'cheapest',
+      enabled: true,
+    }).returning().get();
+
+    const prioritySite = await createSite('cheapest-priority-high');
+    const priorityAccount = await createAccount(prioritySite.id, 'cheapest-priority-high-user');
+    await db.update(schema.accounts)
+      .set({ unitCost: 1, apiTokenBillingMultiplier: 2 })
+      .where(eq(schema.accounts.id, priorityAccount.id))
+      .run();
+    const priorityChannel = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: priorityAccount.id,
+      tokenId: null,
+      priority: 0,
+      weight: 10,
+      enabled: true,
+    }).returning().get();
+
+    const cheapSite = await createSite('cheapest-priority-low');
+    const cheapAccount = await createAccount(cheapSite.id, 'cheapest-priority-low-user');
+    await db.update(schema.accounts)
+      .set({ unitCost: 1, apiTokenBillingMultiplier: 0.1 })
+      .where(eq(schema.accounts.id, cheapAccount.id))
+      .run();
+    await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: cheapAccount.id,
+      tokenId: null,
+      priority: 1,
+      weight: 10,
+      enabled: true,
+    }).run();
+
+    const selected = await new TokenRouter().selectChannel('gpt-5-cheapest-priority');
+
+    expect(selected?.channel.id).toBe(priorityChannel.id);
+  });
+
   it('uses runtime-configured fallback unit cost when observed and configured costs are missing', async () => {
     config.routingWeights = {
       baseWeightFactor: 0.35,

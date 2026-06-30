@@ -60,6 +60,7 @@ export const accounts = sqliteTable('accounts', {
   username: text('username'),
   accessToken: text('access_token').notNull(),
   apiToken: text('api_token'),
+  apiTokenBillingMultiplier: real('api_token_billing_multiplier').default(1),
   balance: real('balance').default(0),
   balanceUsed: real('balance_used').default(0),
   quota: real('quota').default(0),
@@ -91,6 +92,7 @@ export const accountTokens = sqliteTable('account_tokens', {
   name: text('name').notNull(),
   token: text('token').notNull(),
   tokenGroup: text('token_group'),
+  billingMultiplier: real('billing_multiplier').default(1),
   valueStatus: text('value_status').notNull().default('ready'),
   source: text('source').default('manual'), // 'manual' | 'sync' | 'legacy'
   enabled: integer('enabled', { mode: 'boolean' }).default(true),

@@ -1402,6 +1402,22 @@ export async function rebuildTokenRoutesFromAvailability() {
       ? `route-unit:${channel.oauthRouteUnitId}`
       : `${channel.accountId}:${channel.tokenId ?? 'account'}`
   );
+  const createPriorityAllocator = (routeChannels: Array<{ priority?: number | null }>) => {
+    const used = new Set<number>();
+    for (const channel of routeChannels) {
+      const priority = Number(channel.priority ?? 0);
+      if (Number.isFinite(priority) && priority >= 0) {
+        used.add(Math.trunc(priority));
+      }
+    }
+
+    return () => {
+      let priority = 0;
+      while (used.has(priority)) priority += 1;
+      used.add(priority);
+      return priority;
+    };
+  };
   const addModelCandidate = (
     modelNameRaw: string | null | undefined,
     accountId: number,
@@ -1465,6 +1481,7 @@ export async function rebuildTokenRoutesFromAvailability() {
 
     const routeChannels = channels.filter((channel) => channel.routeId === route.id);
     const desiredKeys = new Set(Array.from(candidateMap.keys()));
+    const allocatePriority = createPriorityAllocator(routeChannels);
 
     for (const [candidateKey, candidate] of candidateMap.entries()) {
       const exists = routeChannels.some((channel) => buildChannelKey(channel) === candidateKey);
@@ -1475,7 +1492,7 @@ export async function rebuildTokenRoutesFromAvailability() {
         accountId: candidate.accountId,
         tokenId: candidate.tokenId,
         oauthRouteUnitId: candidate.oauthRouteUnitId,
-        priority: 0,
+        priority: allocatePriority(),
         weight: 10,
         enabled: true,
         manualOverride: false,

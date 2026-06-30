@@ -3,6 +3,10 @@ import { act, create, type ReactTestInstance } from 'react-test-renderer';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../components/Toast.js';
 import TokenRoutes from './TokenRoutes.js';
+import {
+  getRouteRoutingStrategyLabel,
+  normalizeRouteRoutingStrategyValue,
+} from './token-routes/routingStrategy.js';
 
 const { apiMock, getBrandMock } = vi.hoisted(() => ({
   apiMock: {
@@ -75,6 +79,11 @@ describe('TokenRoutes routing strategy updates', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('labels the cheapest routing strategy', () => {
+    expect(normalizeRouteRoutingStrategyValue('cheapest' as any)).toBe('cheapest');
+    expect(getRouteRoutingStrategyLabel('cheapest' as any)).toBe('价格最低');
   });
 
   it('keeps the optimistic routing strategy when refresh fails after a successful save', async () => {
@@ -175,6 +184,57 @@ describe('TokenRoutes routing strategy updates', () => {
         && collectText(node).startsWith('稳定优先')
       ));
       expect(collectText(strategyTrigger)).toContain('稳定优先');
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('supports switching to cheapest and keeps the optimistic label when refresh fails', async () => {
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <MemoryRouter initialEntries={['/routes']}>
+            <ToastProvider>
+              <TokenRoutes />
+            </ToastProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushMicrotasks();
+
+      const expandButton = root.root.find((node) => (
+        node.type === 'div'
+        && String(node.props.className || '').includes('route-card-collapsed')
+      ));
+      await act(async () => {
+        expandButton.props.onClick();
+      });
+      await flushMicrotasks();
+
+      apiMock.getRoutesSummary.mockRejectedValueOnce(new Error('refresh failed'));
+
+      const cheapestOption = root.root.find((node) => (
+        node.type === 'button'
+        && typeof node.props.className === 'string'
+        && node.props.className.includes('modern-select-option')
+        && collectText(node).startsWith('价格最低')
+      ));
+
+      await act(async () => {
+        cheapestOption.props.onClick();
+      });
+      await flushMicrotasks();
+
+      expect(apiMock.updateRoute).toHaveBeenCalledWith(1, { routingStrategy: 'cheapest' });
+
+      const strategyTrigger = root.root.find((node) => (
+        node.type === 'button'
+        && typeof node.props.className === 'string'
+        && node.props.className.includes('modern-select-trigger')
+        && collectText(node).startsWith('价格最低')
+      ));
+      expect(collectText(strategyTrigger)).toContain('价格最低');
     } finally {
       root?.unmount();
     }

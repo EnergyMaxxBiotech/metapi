@@ -1324,6 +1324,8 @@ type CandidateEligibilityOptions = {
 
 type CostSignal = {
   unitCost: number;
+  baseUnitCost: number;
+  credentialMultiplier: number;
   source: 'observed' | 'configured' | 'catalog' | 'fallback';
 };
 
@@ -1571,23 +1573,57 @@ function formatChannelRuntimeLoad(snapshot: ProxyChannelLoadSnapshot): string {
   return `${multiplier.toFixed(2)}（活跃=${snapshot.activeLeaseCount}/${snapshot.concurrencyLimit}，等待=${snapshot.waitingCount}）`;
 }
 
+function normalizeCredentialBillingMultiplier(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 1;
+}
+
+function resolveCredentialBillingMultiplier(candidate: RouteChannelCandidate): number {
+  return candidate.token
+    ? normalizeCredentialBillingMultiplier(candidate.token.billingMultiplier)
+    : normalizeCredentialBillingMultiplier(candidate.account.apiTokenBillingMultiplier);
+}
+
+function buildCostSignal(
+  candidate: RouteChannelCandidate,
+  baseUnitCost: number,
+  source: CostSignal['source'],
+): CostSignal {
+  const normalizedBaseUnitCost = Math.max(baseUnitCost, MIN_EFFECTIVE_UNIT_COST);
+  const credentialMultiplier = resolveCredentialBillingMultiplier(candidate);
+  return {
+    unitCost: Math.max(normalizedBaseUnitCost * credentialMultiplier, MIN_EFFECTIVE_UNIT_COST),
+    baseUnitCost: normalizedBaseUnitCost,
+    credentialMultiplier,
+    source,
+  };
+}
+
+function getCostSourceText(source: CostSignal['source'] | undefined): string {
+  return source === 'observed'
+    ? '实测'
+    : (source === 'configured' ? '配置' : (source === 'catalog' ? '目录' : '默认'));
+}
+
+function formatCostSignal(cost: CostSignal | undefined): string {
+  if (!cost) return '默认:1.000000';
+  const sourceText = getCostSourceText(cost.source);
+  if (Math.abs(cost.credentialMultiplier - 1) < 1e-9) {
+    return `${sourceText}:${cost.unitCost.toFixed(6)}`;
+  }
+  return `${sourceText}:${cost.baseUnitCost.toFixed(6)}x密钥倍率=${cost.credentialMultiplier.toFixed(4)}=>${cost.unitCost.toFixed(6)}`;
+}
+
 function resolveEffectiveUnitCost(candidate: RouteChannelCandidate, modelName: string): CostSignal {
   const successCount = Math.max(0, candidate.channel.successCount ?? 0);
   const totalCost = Math.max(0, candidate.channel.totalCost ?? 0);
   const configured = candidate.account.unitCost ?? null;
 
   if (successCount > 0 && totalCost > 0) {
-    return {
-      unitCost: Math.max(totalCost / successCount, MIN_EFFECTIVE_UNIT_COST),
-      source: 'observed',
-    };
+    return buildCostSignal(candidate, totalCost / successCount, 'observed');
   }
 
   if (typeof configured === 'number' && Number.isFinite(configured) && configured > 0) {
-    return {
-      unitCost: Math.max(configured, MIN_EFFECTIVE_UNIT_COST),
-      source: 'configured',
-    };
+    return buildCostSignal(candidate, configured, 'configured');
   }
 
   const catalogCost = getCachedModelRoutingReferenceCost({
@@ -1596,16 +1632,10 @@ function resolveEffectiveUnitCost(candidate: RouteChannelCandidate, modelName: s
     modelName,
   });
   if (typeof catalogCost === 'number' && Number.isFinite(catalogCost) && catalogCost > 0) {
-    return {
-      unitCost: Math.max(catalogCost, MIN_EFFECTIVE_UNIT_COST),
-      source: 'catalog',
-    };
+    return buildCostSignal(candidate, catalogCost, 'catalog');
   }
 
-  return {
-    unitCost: Math.max(config.routingFallbackUnitCost || 1, MIN_EFFECTIVE_UNIT_COST),
-    source: 'fallback',
-  };
+  return buildCostSignal(candidate, config.routingFallbackUnitCost || 1, 'fallback');
 }
 
 type SiteHistoricalHealthMetrics = {
@@ -1996,7 +2026,9 @@ export class TokenRouter {
       `命中路由：${match.route.modelPattern}`,
       routeStrategy === 'round_robin'
         ? '路由策略：轮询'
-        : (routeStrategy === 'stable_first' ? '路由策略：稳定优先' : '路由策略：按权重随机'),
+        : (routeStrategy === 'stable_first'
+          ? '路由策略：稳定优先'
+          : (routeStrategy === 'cheapest' ? '路由策略：价格最低' : '路由策略：按权重随机')),
     ];
     if (requestedByDisplayName) {
       summary.push(`按显示名命中：${normalizeRouteDisplayName(match.route.displayName)}`);
@@ -2330,14 +2362,20 @@ export class TokenRouter {
         }
       }
 
-      const weighted = this.calculateWeightedSelection(
-        filteredLayer,
-        useChannelSourceModelForCost ? runtimeModelResolver : mappedModel,
-        downstreamPolicy,
-        nowMs,
-        'weighted',
-      );
-      for (const detail of weighted.details) {
+      const selection = routeStrategy === 'cheapest'
+        ? this.calculateCheapestSelection(
+          filteredLayer,
+          useChannelSourceModelForCost ? runtimeModelResolver : mappedModel,
+          nowMs,
+        )
+        : this.calculateWeightedSelection(
+          filteredLayer,
+          useChannelSourceModelForCost ? runtimeModelResolver : mappedModel,
+          downstreamPolicy,
+          nowMs,
+          'weighted',
+        );
+      for (const detail of selection.details) {
         const target = candidateMap.get(detail.candidate.channel.id);
         if (!target) continue;
         target.probability = Number((detail.probability * 100).toFixed(2));
@@ -2346,10 +2384,13 @@ export class TokenRouter {
         }
       }
 
-      if (!weighted.selected) continue;
-      selected = weighted.selected;
+      if (!selection.selected) continue;
+      selected = selection.selected;
       selectedPriority = priority;
       const layerSummaryParts = [`优先级 P${priority}：可用 ${rawLayer.length}`];
+      if (routeStrategy === 'cheapest') {
+        layerSummaryParts.push('按最低有效成本选择');
+      }
       if (breakerFiltered.avoided.length > 0) {
         const breakerSummaryLabel = breakerFiltered.avoided.some((item) => item.reason.includes('模型熔断'))
           ? '运行时熔断避让'
@@ -2946,12 +2987,18 @@ export class TokenRouter {
       const rawLayer = layers.get(priority) ?? [];
       const breakerFiltered = filterSiteRuntimeBrokenCandidatesByModel(rawLayer, runtimeModelResolver, nowMs);
       const candidates = filterRecentlyFailedCandidates(breakerFiltered.candidates, nowMs);
-      const selected = this.weightedRandomSelect(
-        candidates,
-        requestedByDisplayName ? runtimeModelResolver : mappedModel,
-        downstreamPolicy,
-        nowMs,
-      );
+      const selected = routeStrategy === 'cheapest'
+        ? this.calculateCheapestSelection(
+          candidates,
+          requestedByDisplayName ? runtimeModelResolver : mappedModel,
+          nowMs,
+        ).selected
+        : this.weightedRandomSelect(
+          candidates,
+          requestedByDisplayName ? runtimeModelResolver : mappedModel,
+          downstreamPolicy,
+          nowMs,
+        );
       if (!selected) continue;
       const resolved = await this.finalizeSelectedCandidateForDispatch(
         selected,
@@ -3442,6 +3489,66 @@ export class TokenRouter {
     });
   }
 
+  private calculateCheapestSelection(
+    candidates: RouteChannelCandidate[],
+    modelName: string | ((candidate: RouteChannelCandidate) => string),
+    nowMs = Date.now(),
+  ): WeightedSelectionResult {
+    if (candidates.length === 0) {
+      return {
+        selected: null,
+        details: [],
+        stableSiteCount: 0,
+      };
+    }
+
+    const resolveModelName = typeof modelName === 'function'
+      ? modelName
+      : (() => modelName);
+    const rows = candidates.map((candidate) => {
+      const cost = resolveEffectiveUnitCost(candidate, resolveModelName(candidate));
+      const runtimeHealth = getSiteRuntimeHealthDetails(candidate.site.id, resolveModelName(candidate), nowMs);
+      const recentUsage = Math.max((candidate.channel.successCount ?? 0) + (candidate.channel.failCount ?? 0), 1);
+      return {
+        candidate,
+        cost,
+        runtimeHealth,
+        recentUsage,
+      };
+    }).sort((left, right) => {
+      const costDiff = left.cost.unitCost - right.cost.unitCost;
+      if (Math.abs(costDiff) > 1e-9) return costDiff;
+
+      const runtimeHealthDiff = right.runtimeHealth.combinedMultiplier - left.runtimeHealth.combinedMultiplier;
+      if (Math.abs(runtimeHealthDiff) > 1e-9) return runtimeHealthDiff;
+
+      const recentUsageDiff = left.recentUsage - right.recentUsage;
+      if (recentUsageDiff !== 0) return recentUsageDiff;
+
+      const selectionOrder = compareNullableTimeAsc(
+        left.candidate.channel.lastSelectedAt || left.candidate.channel.lastUsedAt,
+        right.candidate.channel.lastSelectedAt || right.candidate.channel.lastUsedAt,
+      );
+      if (selectionOrder !== 0) return selectionOrder;
+
+      const usedOrder = compareNullableTimeAsc(left.candidate.channel.lastUsedAt, right.candidate.channel.lastUsedAt);
+      if (usedOrder !== 0) return usedOrder;
+
+      return (left.candidate.channel.id ?? 0) - (right.candidate.channel.id ?? 0);
+    });
+
+    const selected = rows[0]?.candidate ?? null;
+    return {
+      selected,
+      details: rows.map((row, index) => ({
+        candidate: row.candidate,
+        probability: index === 0 ? 1 : 0,
+        reason: `价格最低（有效成本第 ${index + 1} / ${rows.length}，成本=${formatCostSignal(row.cost)}，运行时健康=${row.runtimeHealth.combinedMultiplier.toFixed(2)}，近期使用=${row.recentUsage}）`,
+      })),
+      stableSiteCount: 0,
+    };
+  }
+
   private async finalizeSelectedCandidateForDispatch(
     selected: RouteChannelCandidate,
     match: RouteMatch,
@@ -3657,9 +3764,7 @@ export class TokenRouter {
       const probability = totalContribution > 0 ? contributions[i] / totalContribution : 0;
       const weight = candidate.channel.weight ?? 10;
       const cost = effectiveCosts[i];
-      const costSourceText = cost?.source === 'observed'
-        ? '实测'
-        : (cost?.source === 'configured' ? '配置' : (cost?.source === 'catalog' ? '目录' : '默认'));
+      const costText = formatCostSignal(cost);
       const siteChannels = Math.max(1, siteChannelCounts.get(candidate.site.id) || 1);
       const downstreamSiteMultiplier = downstreamPolicy.siteWeightMultipliers[candidate.site.id] ?? 1;
       const normalizedDownstreamSiteMultiplier =
@@ -3710,8 +3815,8 @@ export class TokenRouter {
           ? `${reasonPrefix}，近期成功率=${recentSuccessRateText}（样本=${siteRuntimeDetail.recentSampleCount.toFixed(2)}，置信=${siteRuntimeDetail.recentConfidence.toFixed(2)}），回退成功率=${historicalSuccessRateText}，综合近期成功率=${stableFirstSuccessRateText}，运行时健康=${runtimeHealthText}，会话负载=${runtimeLoadText}，同站点通道=${siteChannels}${stablePoolText}，评分占比≈${(probability * 100).toFixed(1)}%）`
           : (
             candidates.length === 1
-              ? `${reasonPrefix}，W=${weight}，成本=${costSourceText}:${(cost?.unitCost || 1).toFixed(6)}，站点权重=${siteGlobalWeight.toFixed(2)}x下游倍率=${normalizedDownstreamSiteMultiplier.toFixed(2)}=${combinedSiteWeight.toFixed(2)}，运行时健康=${runtimeHealthText}，会话负载=${runtimeLoadText}，历史健康=${siteHistoricalMultiplier.toFixed(2)}（成功率=${historicalSuccessRateText}，均延迟=${historicalLatencyText}，样本=${siteHistoricalHealth?.totalCalls ?? 0}），同站点通道=${siteChannels}，概率≈${(probability * 100).toFixed(1)}%）`
-              : `按权重随机（W=${weight}，成本=${costSourceText}:${(cost?.unitCost || 1).toFixed(6)}，站点权重=${siteGlobalWeight.toFixed(2)}x下游倍率=${normalizedDownstreamSiteMultiplier.toFixed(2)}=${combinedSiteWeight.toFixed(2)}，运行时健康=${runtimeHealthText}，会话负载=${runtimeLoadText}，历史健康=${siteHistoricalMultiplier.toFixed(2)}（成功率=${historicalSuccessRateText}，均延迟=${historicalLatencyText}，样本=${siteHistoricalHealth?.totalCalls ?? 0}），同站点通道=${siteChannels}，概率≈${(probability * 100).toFixed(1)}%）`
+              ? `${reasonPrefix}，W=${weight}，成本=${costText}，站点权重=${siteGlobalWeight.toFixed(2)}x下游倍率=${normalizedDownstreamSiteMultiplier.toFixed(2)}=${combinedSiteWeight.toFixed(2)}，运行时健康=${runtimeHealthText}，会话负载=${runtimeLoadText}，历史健康=${siteHistoricalMultiplier.toFixed(2)}（成功率=${historicalSuccessRateText}，均延迟=${historicalLatencyText}，样本=${siteHistoricalHealth?.totalCalls ?? 0}），同站点通道=${siteChannels}，概率≈${(probability * 100).toFixed(1)}%）`
+              : `按权重随机（W=${weight}，成本=${costText}，站点权重=${siteGlobalWeight.toFixed(2)}x下游倍率=${normalizedDownstreamSiteMultiplier.toFixed(2)}=${combinedSiteWeight.toFixed(2)}，运行时健康=${runtimeHealthText}，会话负载=${runtimeLoadText}，历史健康=${siteHistoricalMultiplier.toFixed(2)}（成功率=${historicalSuccessRateText}，均延迟=${historicalLatencyText}，样本=${siteHistoricalHealth?.totalCalls ?? 0}），同站点通道=${siteChannels}，概率≈${(probability * 100).toFixed(1)}%）`
           ),
       };
     });

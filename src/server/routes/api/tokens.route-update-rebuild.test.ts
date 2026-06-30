@@ -4,6 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
+import { formatUtcSqlDateTime } from '../../services/localTimeService.js';
 
 type DbModule = typeof import('../../db/index.js');
 
@@ -71,6 +72,7 @@ describe('PUT /api/routes/:id route rebuild', () => {
   beforeEach(async () => {
     resetTokenRouteReadLimitersForTests();
     await db.delete(schema.routeChannels).run();
+    await db.delete(schema.proxyLogs).run();
     await db.delete(schema.tokenRoutes).run();
     await db.delete(schema.tokenModelAvailability).run();
     await db.delete(schema.modelAvailability).run();
@@ -334,6 +336,227 @@ describe('PUT /api/routes/:id route rebuild', () => {
 
     expect(updatedRouteA?.routingStrategy).toBe('round_robin');
     expect(updatedRouteB?.routingStrategy).toBe('round_robin');
+  });
+
+  it('reprioritizes channels by credential cost when switching to cheapest', async () => {
+    const expensiveCandidate = await seedAccountWithToken('gpt-5-cheapest-auto');
+    const cheapCandidate = await seedAccountWithToken('gpt-5-cheapest-auto');
+
+    await db.update(schema.accountTokens)
+      .set({ billingMultiplier: 2 })
+      .where(eq(schema.accountTokens.id, expensiveCandidate.token.id))
+      .run();
+    await db.update(schema.accountTokens)
+      .set({ billingMultiplier: 0.5 })
+      .where(eq(schema.accountTokens.id, cheapCandidate.token.id))
+      .run();
+
+    const route = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-cheapest-auto',
+      enabled: true,
+      routingStrategy: 'weighted',
+    }).returning().get();
+
+    const expensiveChannel = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: expensiveCandidate.account.id,
+      tokenId: expensiveCandidate.token.id,
+      sourceModel: 'gpt-5-cheapest-auto',
+      priority: 0,
+      weight: 10,
+      enabled: true,
+      manualOverride: true,
+    }).returning().get();
+    const cheapChannel = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: cheapCandidate.account.id,
+      tokenId: cheapCandidate.token.id,
+      sourceModel: 'gpt-5-cheapest-auto',
+      priority: 7,
+      weight: 10,
+      enabled: true,
+      manualOverride: true,
+    }).returning().get();
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/routes/${route.id}`,
+      payload: {
+        routingStrategy: 'cheapest',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const channels = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, route.id))
+      .all();
+    const priorityByChannelId = new Map(channels.map((channel) => [channel.id, channel.priority]));
+
+    expect(priorityByChannelId.get(cheapChannel.id)).toBe(0);
+    expect(priorityByChannelId.get(expensiveChannel.id)).toBe(1);
+  });
+
+  it('keeps automatic channels automatic after strategy reprioritization', async () => {
+    const expensiveCandidate = await seedAccountWithToken('gpt-5-cheapest-auto-preserve');
+    const cheapCandidate = await seedAccountWithToken('gpt-5-cheapest-auto-preserve');
+
+    await db.update(schema.accountTokens)
+      .set({ billingMultiplier: 2 })
+      .where(eq(schema.accountTokens.id, expensiveCandidate.token.id))
+      .run();
+    await db.update(schema.accountTokens)
+      .set({ billingMultiplier: 0.5 })
+      .where(eq(schema.accountTokens.id, cheapCandidate.token.id))
+      .run();
+
+    const route = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-cheapest-auto-preserve',
+      enabled: true,
+      routingStrategy: 'weighted',
+    }).returning().get();
+
+    const expensiveChannel = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: expensiveCandidate.account.id,
+      tokenId: expensiveCandidate.token.id,
+      sourceModel: 'gpt-5-cheapest-auto-preserve',
+      priority: 0,
+      weight: 10,
+      enabled: true,
+      manualOverride: false,
+    }).returning().get();
+    const cheapChannel = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: cheapCandidate.account.id,
+      tokenId: cheapCandidate.token.id,
+      sourceModel: 'gpt-5-cheapest-auto-preserve',
+      priority: 7,
+      weight: 10,
+      enabled: true,
+      manualOverride: false,
+    }).returning().get();
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/routes/${route.id}`,
+      payload: {
+        routingStrategy: 'cheapest',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const channels = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, route.id))
+      .all();
+    const byId = new Map(channels.map((channel) => [channel.id, channel]));
+
+    expect(byId.get(cheapChannel.id)?.priority).toBe(0);
+    expect(byId.get(expensiveChannel.id)?.priority).toBe(1);
+    expect(byId.get(cheapChannel.id)?.manualOverride).toBe(false);
+    expect(byId.get(expensiveChannel.id)?.manualOverride).toBe(false);
+  });
+
+  it('reprioritizes channels by 12-hour proxy log health when switching to stable_first', async () => {
+    const staleFailureCandidate = await seedAccountWithToken('gpt-5-stable-auto');
+    const recentFailureCandidate = await seedAccountWithToken('gpt-5-stable-auto');
+    const healthyCandidate = await seedAccountWithToken('gpt-5-stable-auto');
+
+    const route = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-stable-auto',
+      enabled: true,
+      routingStrategy: 'weighted',
+    }).returning().get();
+
+    const staleFailureChannel = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: staleFailureCandidate.account.id,
+      tokenId: staleFailureCandidate.token.id,
+      sourceModel: 'gpt-5-stable-auto',
+      priority: 0,
+      weight: 10,
+      enabled: true,
+      manualOverride: true,
+    }).returning().get();
+    const recentFailureChannel = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: recentFailureCandidate.account.id,
+      tokenId: recentFailureCandidate.token.id,
+      sourceModel: 'gpt-5-stable-auto',
+      priority: 4,
+      weight: 10,
+      enabled: true,
+      manualOverride: true,
+    }).returning().get();
+    const healthyChannel = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: healthyCandidate.account.id,
+      tokenId: healthyCandidate.token.id,
+      sourceModel: 'gpt-5-stable-auto',
+      priority: 8,
+      weight: 10,
+      enabled: true,
+      manualOverride: true,
+    }).returning().get();
+
+    const now = Date.now();
+    await db.insert(schema.proxyLogs).values([
+      {
+        routeId: route.id,
+        channelId: staleFailureChannel.id,
+        accountId: staleFailureCandidate.account.id,
+        modelRequested: 'gpt-5-stable-auto',
+        modelActual: 'gpt-5-stable-auto',
+        status: 'failed',
+        httpStatus: 502,
+        latencyMs: 900,
+        errorMessage: 'old failure',
+        createdAt: formatUtcSqlDateTime(new Date(now - 13 * 60 * 60 * 1000)),
+      },
+      {
+        routeId: route.id,
+        channelId: recentFailureChannel.id,
+        accountId: recentFailureCandidate.account.id,
+        modelRequested: 'gpt-5-stable-auto',
+        modelActual: 'gpt-5-stable-auto',
+        status: 'failed',
+        httpStatus: 502,
+        latencyMs: 800,
+        errorMessage: 'recent failure',
+        createdAt: formatUtcSqlDateTime(new Date(now - 60 * 60 * 1000)),
+      },
+      {
+        routeId: route.id,
+        channelId: healthyChannel.id,
+        accountId: healthyCandidate.account.id,
+        modelRequested: 'gpt-5-stable-auto',
+        modelActual: 'gpt-5-stable-auto',
+        status: 'success',
+        httpStatus: 200,
+        latencyMs: 320,
+        createdAt: formatUtcSqlDateTime(new Date(now - 30 * 60 * 1000)),
+      },
+    ]).run();
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/routes/${route.id}`,
+      payload: {
+        routingStrategy: 'stable_first',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const channels = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, route.id))
+      .all();
+    const priorityByChannelId = new Map(channels.map((channel) => [channel.id, channel.priority]));
+
+    expect(priorityByChannelId.get(healthyChannel.id)).toBe(0);
+    expect(priorityByChannelId.get(staleFailureChannel.id)).toBe(1);
+    expect(priorityByChannelId.get(recentFailureChannel.id)).toBe(2);
   });
 
   it('does not overwrite source routes shared by another explicit-group', async () => {

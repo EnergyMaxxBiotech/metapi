@@ -183,6 +183,13 @@
       "when": 1776944000000,
       "tag": "0026_site_probe_latency_threshold",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1782839316613,
+      "tag": "0027_upstream_credential_billing_multipliers",
+      "breakpoints": true
     }
   ]
 }

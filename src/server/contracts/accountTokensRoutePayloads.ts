@@ -8,6 +8,7 @@ const accountTokenCreatePayloadSchema = z.object({
   isDefault: z.boolean().optional(),
   source: z.string().optional(),
   group: z.string().optional(),
+  billingMultiplier: z.union([z.number().finite().positive(), z.null()]).optional(),
   unlimitedQuota: z.boolean().optional(),
   remainQuota: z.union([z.number(), z.string()]).optional(),
   expiredTime: z.union([z.number(), z.string()]).optional(),
@@ -28,6 +29,7 @@ const accountTokenUpdatePayloadSchema = z.object({
   enabled: z.boolean().optional(),
   isDefault: z.boolean().optional(),
   source: z.string().optional(),
+  billingMultiplier: z.union([z.number().finite().positive(), z.null()]).optional(),
 }).passthrough();
 
 const accountTokenSyncAllPayloadSchema = z.object({
@@ -66,6 +68,9 @@ function formatAccountTokenPayloadError(error: z.ZodError): string {
   }
   if (firstPath === 'group') {
     return 'Invalid group. Expected string.';
+  }
+  if (firstPath === 'billingMultiplier') {
+    return 'Invalid billingMultiplier. Expected positive number or null.';
   }
   if (firstPath === 'unlimitedQuota') {
     return 'Invalid unlimitedQuota. Expected boolean.';

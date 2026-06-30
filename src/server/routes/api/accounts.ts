@@ -58,6 +58,7 @@ import {
   parseBatchApiKeys,
 } from "../../services/apiKeyBatch.js";
 import { createManualAccount } from "../../services/manualAccountCreationService.js";
+import { reprioritizeCheapestRoutesForAccountIds } from "../../services/routePriorityRebuildService.js";
 
 type AccountWithSiteRow = {
   accounts: typeof schema.accounts.$inferSelect;
@@ -1429,10 +1430,17 @@ export async function accountsRoutes(app: FastifyInstance) {
         "status",
         "checkinEnabled",
         "unitCost",
+        "apiTokenBillingMultiplier",
         "extraConfig",
       ]) {
         if (body[key] !== undefined) updates[key] = body[key];
       }
+      if (Object.prototype.hasOwnProperty.call(updates, "apiTokenBillingMultiplier")) {
+        updates.apiTokenBillingMultiplier = updates.apiTokenBillingMultiplier ?? 1;
+      }
+      const apiTokenBillingMultiplierChanged =
+        Object.prototype.hasOwnProperty.call(updates, "apiTokenBillingMultiplier") &&
+        Math.abs((updates.apiTokenBillingMultiplier ?? 1) - (account.apiTokenBillingMultiplier ?? 1)) > 1e-9;
 
       const wantsManagedSub2ApiAuthPatch =
         Object.prototype.hasOwnProperty.call(body, "refreshToken") ||
@@ -1552,6 +1560,9 @@ export async function accountsRoutes(app: FastifyInstance) {
         nextStatus !== "disabled";
       const shouldAttemptExpiredApiKeyRecovery =
         isExpiredApiKeyAccount && needsModelRefresh;
+      const needsRouteRebuildAfterAccountUpdate = needsModelRefresh
+        || Object.prototype.hasOwnProperty.call(body, "unitCost")
+        || Object.prototype.hasOwnProperty.call(body, "status");
 
       const { account: updatedAccount } = await applyAccountUpdateWorkflow({
         accountId: id,
@@ -1563,8 +1574,13 @@ export async function accountsRoutes(app: FastifyInstance) {
         allowInactiveModelRefresh: shouldAttemptExpiredApiKeyRecovery,
         reactivateAfterSuccessfulModelRefresh:
           shouldAttemptExpiredApiKeyRecovery,
+        rebuildRoutes: needsRouteRebuildAfterAccountUpdate,
         continueOnError: true,
       });
+
+      if (apiTokenBillingMultiplierChanged) {
+        await reprioritizeCheapestRoutesForAccountIds([id]);
+      }
 
       return updatedAccount;
     },

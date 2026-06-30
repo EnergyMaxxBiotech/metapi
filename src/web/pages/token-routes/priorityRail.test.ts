@@ -8,7 +8,7 @@ import {
 } from './priorityRail.js';
 
 describe('priorityRail helpers', () => {
-  it('groups channels into visible priority sections and preserves in-layer order', () => {
+  it('renders channels as one visible priority section each', () => {
     const sections = buildPriorityRailSections([
       { id: 11, priority: 0 },
       { id: 12, priority: 0 },
@@ -16,8 +16,9 @@ describe('priorityRail helpers', () => {
     ]);
 
     expect(sections).toEqual([
-      { priority: 0, channelCount: 2, channelIds: [11, 12] },
-      { priority: 1, channelCount: 1, channelIds: [21] },
+      { priority: 0, channelCount: 1, channelIds: [11] },
+      { priority: 1, channelCount: 1, channelIds: [12] },
+      { priority: 2, channelCount: 1, channelIds: [21] },
     ]);
   });
 
@@ -40,7 +41,7 @@ describe('priorityRail helpers', () => {
     ]);
   });
 
-  it('moves a channel into an existing layer when dropped onto another channel', () => {
+  it('moves a channel before an existing layer when dropped onto another channel', () => {
     const reordered = applyPriorityRailDrop(
       [
         { id: 11, priority: 0 },
@@ -52,9 +53,9 @@ describe('priorityRail helpers', () => {
     );
 
     expect(reordered).toEqual([
-      { id: 11, priority: 0 },
-      { id: 12, priority: 0 },
       { id: 21, priority: 0 },
+      { id: 11, priority: 1 },
+      { id: 12, priority: 2 },
     ]);
   });
 
@@ -76,15 +77,18 @@ describe('priorityRail helpers', () => {
     ]);
   });
 
-  it('keeps priority color hierarchy even when a rail node is highlighted', () => {
+  it('uses green for normal priorities and red for unavailable priorities', () => {
     const p0 = buildPriorityRailNodeStyle(0, false);
-    const p0Highlighted = buildPriorityRailNodeStyle(0, true);
-    const p1Highlighted = buildPriorityRailNodeStyle(1, true);
+    const p1 = buildPriorityRailNodeStyle(1, false);
+    const unavailable = buildPriorityRailNodeStyle(2, false, true);
+    const highlighted = buildPriorityRailNodeStyle(0, true);
 
     expect(p0.background).not.toBe('var(--color-bg)');
-    expect(String(p0Highlighted.background)).toContain('var(--color-bg)');
-    expect(String(p0Highlighted.background)).not.toContain('white');
-    expect(p0Highlighted.color).toBe('var(--color-primary)');
-    expect(p0Highlighted.background).not.toBe(p1Highlighted.background);
+    expect(p0.color).toBe('var(--color-success)');
+    expect(p1.color).toBe('var(--color-success)');
+    expect(unavailable.color).toBe('var(--color-danger)');
+    expect(String(highlighted.background)).toContain('var(--color-bg)');
+    expect(String(highlighted.background)).not.toContain('white');
+    expect(highlighted.color).toBe('var(--color-primary)');
   });
 });

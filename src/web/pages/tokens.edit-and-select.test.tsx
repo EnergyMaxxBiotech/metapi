@@ -16,6 +16,7 @@ const { apiMock } = vi.hoisted(() => ({
     getAccountTokenValue: vi.fn(),
     getAccountTokenGroups: vi.fn(),
     syncAccountTokens: vi.fn(),
+    addAccountToken: vi.fn(),
     updateAccountToken: vi.fn(),
   },
 }));
@@ -133,6 +134,9 @@ describe('Tokens edit modal and row selection', () => {
     apiMock.updateAccountToken.mockResolvedValue({
       success: true,
     });
+    apiMock.addAccountToken.mockResolvedValue({
+      success: true,
+    });
     apiMock.syncAccountTokens.mockResolvedValue({
       success: true,
       synced: true,
@@ -183,12 +187,23 @@ describe('Tokens edit modal and row selection', () => {
         .find((node) => collectText(node).includes('保存修改'));
       expect(saveButton).toBeTruthy();
 
+      const multiplierInput = root.root.find((node) => (
+        node.type === 'input'
+        && node.props.placeholder === '上游密钥计费倍率'
+      ));
+      await act(async () => {
+        multiplierInput.props.onChange({ target: { value: '0.7' } });
+      });
+
       await act(async () => {
         saveButton!.props.onClick();
       });
       await flushMicrotasks();
 
-      expect(apiMock.updateAccountToken).toHaveBeenCalledWith(22, expect.objectContaining({ group: 'default' }));
+      expect(apiMock.updateAccountToken).toHaveBeenCalledWith(22, expect.objectContaining({
+        group: 'default',
+        billingMultiplier: 0.7,
+      }));
     } finally {
       root?.unmount();
     }
@@ -328,6 +343,34 @@ describe('Tokens edit modal and row selection', () => {
           }),
         ]),
       );
+
+      await act(async () => {
+        addAccountSelect!.props.onChange('1');
+      });
+      await flushMicrotasks();
+
+      const multiplierInput = root.root.find((node) => (
+        node.type === 'input'
+        && node.props.placeholder === '上游密钥计费倍率'
+      ));
+      await act(async () => {
+        multiplierInput.props.onChange({ target: { value: '0.8' } });
+      });
+
+      const createButton = root.root
+        .findAll((node) => node.type === 'button')
+        .find((node) => collectText(node).includes('创建并同步令牌'));
+      expect(createButton).toBeTruthy();
+
+      await act(async () => {
+        await createButton!.props.onClick();
+      });
+      await flushMicrotasks();
+
+      expect(apiMock.addAccountToken).toHaveBeenCalledWith(expect.objectContaining({
+        accountId: 1,
+        billingMultiplier: 0.8,
+      }));
     } finally {
       root?.unmount();
     }

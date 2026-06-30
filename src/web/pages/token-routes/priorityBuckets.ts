@@ -30,15 +30,9 @@ export function isPriorityBucketSeparatorId(value: unknown): value is string {
 }
 
 export function buildPriorityBuckets(channels: RouteChannel[]): PriorityBucket[] {
-  const grouped = new Map<number, RouteChannel[]>();
-  for (const channel of normalizeChannels(channels || [])) {
-    const priority = channel.priority ?? 0;
-    if (!grouped.has(priority)) grouped.set(priority, []);
-    grouped.get(priority)!.push(channel);
-  }
-  return Array.from(grouped.entries()).map(([priority, bucketChannels]) => ({
-    priority,
-    channels: bucketChannels,
+  return normalizeChannels(channels || []).map((channel, index) => ({
+    priority: index,
+    channels: [{ ...channel, priority: index }],
   }));
 }
 
@@ -56,28 +50,21 @@ export function buildPriorityBucketEditorItems(channels: RouteChannel[]): Priori
   return items;
 }
 
+function assignDensePriorities(channels: RouteChannel[]): RouteChannel[] {
+  return normalizeChannels(channels || []).map((channel, index) => ({
+    ...channel,
+    priority: index,
+  }));
+}
+
 export function splitPriorityBucketAfterChannel(
   channels: RouteChannel[],
   channelId: number,
 ): RouteChannel[] {
-  const normalized = normalizeChannels(channels || []);
+  void channelId;
+  const normalized = assignDensePriorities(channels || []);
   if (normalized.length <= 1) return normalized;
-
-  const items = buildPriorityBucketEditorItems(normalized);
-  const channelIndex = items.findIndex((item) => item.kind === 'channel' && item.id === channelId);
-  if (channelIndex < 0) return normalized;
-
-  const nextItem = items[channelIndex + 1];
-  if (!nextItem || nextItem.kind === 'separator') {
-    return normalized;
-  }
-
-  const next = [...items];
-  next.splice(channelIndex + 1, 0, {
-    id: `${PRIORITY_BUCKET_SEPARATOR_PREFIX}split:${channelId}`,
-    kind: 'separator',
-  });
-  return denseRenormalizeChannels(next);
+  return normalized;
 }
 
 function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
@@ -88,26 +75,28 @@ function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
 }
 
 function denseRenormalizeChannels(items: PriorityBucketEditorItem[]): RouteChannel[] {
-  let rawBucketIndex = 0;
-  let nextPriority = 0;
-  const rawToDense = new Map<number, number>();
   const reordered: RouteChannel[] = [];
 
   for (const item of items) {
-    if (item.kind === 'separator') {
-      rawBucketIndex += 1;
-      continue;
-    }
-    if (!rawToDense.has(rawBucketIndex)) {
-      rawToDense.set(rawBucketIndex, nextPriority);
-      nextPriority += 1;
-    }
+    if (item.kind !== 'channel') continue;
     reordered.push({
       ...item.channel,
-      priority: rawToDense.get(rawBucketIndex)!,
+      priority: reordered.length,
     });
   }
 
+  return normalizeChannels(reordered);
+}
+
+function denseRenormalizeFlatChannels(items: PriorityBucketEditorItem[]): RouteChannel[] {
+  const reordered: RouteChannel[] = [];
+  for (const item of items) {
+    if (item.kind !== 'channel') continue;
+    reordered.push({
+      ...item.channel,
+      priority: reordered.length,
+    });
+  }
   return normalizeChannels(reordered);
 }
 
@@ -116,7 +105,7 @@ export function applyPriorityBucketDrag(
   activeId: string | number,
   overId: string | number,
 ): RouteChannel[] {
-  const normalized = normalizeChannels(channels || []);
+  const normalized = assignDensePriorities(channels || []);
   if (normalized.length === 0 || activeId === overId) return normalized;
 
   const items = buildPriorityBucketEditorItems(normalized);
@@ -154,5 +143,8 @@ export function applyPriorityBucketDrag(
     }
   }
 
-  return denseRenormalizeChannels(moveItem(items, activeIndex, overIndex));
+  const movedItems = moveItem(items, activeIndex, overIndex);
+  return activeItem.kind === 'channel'
+    ? denseRenormalizeFlatChannels(movedItems)
+    : denseRenormalizeChannels(movedItems);
 }

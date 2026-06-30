@@ -31,6 +31,8 @@ import {
   parseAccountTokenSyncAllPayload,
   parseAccountTokenUpdatePayload,
 } from '../../contracts/accountTokensRoutePayloads.js';
+import { syncAccountTokenBillingMultipliersFromSitePricing } from '../../services/credentialBillingSyncService.js';
+import { reprioritizeCheapestRoutesForTokenIds } from '../../services/routePriorityRebuildService.js';
 
 type AccountWithSiteRow = {
   accounts: typeof schema.accounts.$inferSelect;
@@ -54,6 +56,7 @@ type SyncExecutionResult = {
   pendingTokenIds?: number[];
   total: number;
   defaultTokenId?: number | null;
+  billingMultiplierSync?: Awaited<ReturnType<typeof syncAccountTokenBillingMultipliersFromSitePricing>> | null;
 };
 
 type CoverageRefreshFailureItem = {
@@ -336,6 +339,14 @@ async function executeAccountTokenSync(row: AccountWithSiteRow): Promise<SyncExe
       upstreamTokens: tokens,
     });
     const synced = convergence.tokenSync!;
+    const refreshedAccount = await db.select()
+      .from(schema.accounts)
+      .where(eq(schema.accounts.id, accountId))
+      .get();
+    const billingMultiplierSync = await syncAccountTokenBillingMultipliersFromSitePricing({
+      accounts: refreshedAccount ?? row.accounts,
+      sites: row.sites,
+    });
     if ((synced.maskedPending || 0) > 0) {
       return {
         ...base,
@@ -344,6 +355,7 @@ async function executeAccountTokenSync(row: AccountWithSiteRow): Promise<SyncExe
         message: `上游返回 ${synced.maskedPending} 条脱敏令牌，已保存为待补全记录，请手动补全明文 token。`,
         synced: true,
         ...synced,
+        billingMultiplierSync,
       };
     }
     return {
@@ -351,6 +363,7 @@ async function executeAccountTokenSync(row: AccountWithSiteRow): Promise<SyncExe
       status: 'synced',
       synced: true,
       ...synced,
+      billingMultiplierSync,
     };
   } catch (error: any) {
     return {
@@ -520,6 +533,7 @@ export async function accountTokensRoutes(app: FastifyInstance) {
           name: (body.name || '').trim() || (existing.length === 0 ? 'default' : `token-${existing.length + 1}`),
           token: tokenValue,
           tokenGroup: (body.group || '').trim() || null,
+          billingMultiplier: body.billingMultiplier ?? 1,
           valueStatus,
           source: body.source || 'manual',
           enabled,
@@ -809,6 +823,11 @@ export async function accountTokensRoutes(app: FastifyInstance) {
     if (body.group !== undefined) {
       updates.tokenGroup = (body.group || '').trim() || null;
     }
+    if (body.billingMultiplier !== undefined) {
+      updates.billingMultiplier = body.billingMultiplier ?? 1;
+    }
+    const billingMultiplierChanged = body.billingMultiplier !== undefined
+      && Math.abs((body.billingMultiplier ?? 1) - (existing.billingMultiplier ?? 1)) > 1e-9;
 
     if (nextValueStatus === ACCOUNT_TOKEN_VALUE_STATUS_MASKED_PENDING) {
       updates.enabled = false;
@@ -839,6 +858,10 @@ export async function accountTokensRoutes(app: FastifyInstance) {
     latest = await db.select().from(schema.accountTokens).where(eq(schema.accountTokens.id, tokenId)).get();
     if (!latest) {
       return reply.code(500).send({ success: false, message: '更新失败' });
+    }
+
+    if (billingMultiplierChanged) {
+      await reprioritizeCheapestRoutesForTokenIds([tokenId]);
     }
 
     return { success: true, token: latest };

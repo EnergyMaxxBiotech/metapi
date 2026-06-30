@@ -20,28 +20,100 @@ function containsHttpStatus(message: string | null | undefined, status: number):
   return new RegExp(`(?:^|\\b)(?:http\\s*)?${status}(?:\\b|:)`, 'i').test(message);
 }
 
+function isRequestValidationFailure(text: string): boolean {
+  return (
+    text.includes('invalid_argument') ||
+    text.includes('invalid_request_error') ||
+    text.includes('input token limit') ||
+    text.includes('context length') ||
+    text.includes('maximum context') ||
+    text.includes('max context') ||
+    text.includes('too many tokens')
+  );
+}
+
+function isCapabilityOrBillingFailure(text: string): boolean {
+  return (
+    /model\s+.+\s+is\s+not\s+supported/.test(text) ||
+    text.includes('not supported for format') ||
+    text.includes('no payment method') ||
+    text.includes('payment method') ||
+    text.includes('billing') ||
+    text.includes('insufficient quota') ||
+    text.includes('quota exceeded')
+  );
+}
+
+function isTransientUpstreamFailure(text: string): boolean {
+  return (
+    text.includes('timeout') ||
+    text.includes('timed out') ||
+    text.includes('service unavailable') ||
+    text.includes('bad gateway') ||
+    text.includes('gateway timeout') ||
+    text.includes('cloudflare') ||
+    text.includes('cf challenge') ||
+    text.includes('overloaded')
+  );
+}
+
+function hasCredentialFailureSignal(text: string): boolean {
+  return (
+    text.includes('jwt expired') ||
+    text.includes('token expired') ||
+    text.includes('expired token') ||
+    text.includes('invalid_token') ||
+    text.includes('expired_token') ||
+    text.includes('invalid_api_key') ||
+    text.includes('expired_api_key') ||
+    /invalid\s+(?:access\s+|refresh\s+|session\s+)?token/.test(text) ||
+    /(?:access\s+|refresh\s+|session\s+)?token\s+(?:is\s+)?invalid/.test(text) ||
+    /(?:access\s+|refresh\s+|session\s+)?token\s+(?:is\s+)?expired/.test(text) ||
+    /access\s+token\s+(?:is\s+)?required/.test(text) ||
+    /invalid\s+api\s+key/.test(text) ||
+    /api\s+key\s+(?:is\s+)?invalid/.test(text) ||
+    /incorrect\s+api\s+key/.test(text) ||
+    /api\s+key\s+(?:is\s+)?expired/.test(text) ||
+    /token\s*(?:无效|过期)/.test(text) ||
+    /(?:令牌|访问令牌).*(?:无效|过期)/.test(text)
+  );
+}
+
+function hasHttpAuthFailureSignal(text: string): boolean {
+  return (
+    text.includes('unauthorized') ||
+    text.includes('unauthenticated') ||
+    text.includes('authentication required') ||
+    text.includes('authorization required') ||
+    text.includes('not authenticated') ||
+    text.includes('invalid authorization')
+  );
+}
+
 export function isTokenExpiredError(input: { status?: number; message?: string | null }): boolean {
   const rawMessage = input.message || '';
   const text = (input.message || '').toLowerCase();
   if (isEndpointDispatchDeniedMessage(rawMessage)) return false;
-  if (input.status === 401 || containsHttpStatus(rawMessage, 401)) return true;
   if (!text) return false;
 
   // NewAPI-like sites may return this when session context is missing for an action,
   // which does not always mean the account token is expired.
   if (text.includes('未登录且未提供 access token')) return false;
 
-  const tokenPhrase = text.includes('token') || text.includes('令牌') || text.includes('访问令牌');
-  const hasInvalid = text.includes('invalid') || text.includes('无效');
-  const hasExpired = text.includes('expired') || text.includes('过期');
+  const hasCredentialFailure = hasCredentialFailureSignal(text);
+  if (!hasCredentialFailure && (
+    isRequestValidationFailure(text) ||
+    isCapabilityOrBillingFailure(text) ||
+    isTransientUpstreamFailure(text)
+  )) {
+    return false;
+  }
 
-  return (
-    text.includes('jwt expired') ||
-    text.includes('token expired') ||
-    (tokenPhrase && (hasInvalid || hasExpired)) ||
-    /invalid\s+access\s+token/.test(text) ||
-    /access\s+token\s+is\s+invalid/.test(text)
-  );
+  if (input.status === 401 || containsHttpStatus(rawMessage, 401)) {
+    return hasCredentialFailure || hasHttpAuthFailureSignal(text);
+  }
+
+  return hasCredentialFailure;
 }
 
 export function appendSessionTokenRebindHint(message?: string | null): string {

@@ -45,6 +45,7 @@ import {
   isExplicitGroupRoute,
   resolveRouteTitle,
   resolveRouteIcon,
+  isChannelRecentlyUnavailable,
 } from './utils.js';
 import {
   buildPriorityBuckets,
@@ -299,7 +300,7 @@ function PriorityDragPreview({
             fontSize: 10,
             fontWeight: 700,
             letterSpacing: 0.1,
-            ...buildPriorityRailNodeStyle(displayPriority, true),
+            ...buildPriorityRailNodeStyle(displayPriority, true, isChannelRecentlyUnavailable(channel)),
           }}
         >
           P{displayPriority}
@@ -420,9 +421,10 @@ function SortableChannelShell({
     isDragging,
   } = useSortable({
     id: channel.id,
-    disabled: savingPriority || readOnlyRoute,
+    disabled: savingPriority || readOnlyRoute || channelManagementDisabled,
   });
 
+  const priorityDragDisabled = savingPriority || readOnlyRoute || channelManagementDisabled;
   const tokenOptions = candidateView.tokenOptionsByAccountId[channel.accountId] || [];
   const activeTokenId = channelTokenDraft[channel.id] ?? channel.tokenId ?? 0;
   const showDesktopRailHeader = !compact && channelIndex === 0;
@@ -460,7 +462,6 @@ function SortableChannelShell({
 
       {!compact ? (
         <div
-          aria-hidden
           style={{
             width: 86,
             flexShrink: 0,
@@ -472,7 +473,15 @@ function SortableChannelShell({
         >
           {showDesktopRailHeader ? (
             <>
-              <div
+              <button
+                type="button"
+                {...attributes}
+                {...listeners}
+                disabled={priorityDragDisabled}
+                data-testid="route-priority-drag-handle"
+                className="btn btn-ghost"
+                aria-label={`${railLabel}，拖拽调整优先级桶`}
+                data-tooltip={priorityDragDisabled ? '该路由当前不可编辑优先级' : '拖拽调整优先级桶'}
                 style={{
                   minWidth: 64,
                   padding: '5px 8px',
@@ -481,15 +490,17 @@ function SortableChannelShell({
                   fontWeight: 600,
                   textAlign: 'center',
                   lineHeight: 1.2,
+                  cursor: priorityDragDisabled ? 'not-allowed' : 'grab',
+                  opacity: priorityDragDisabled ? 0.72 : 1,
                   transition: 'border-color 0.16s ease, background 0.16s ease, color 0.16s ease',
                   ...railNodeStyle,
                 }}
               >
                 {railLabel}
-              </div>
+              </button>
             </>
           ) : (
-            <div style={{ minWidth: 64 }} />
+            <div aria-hidden style={{ minWidth: 64 }} />
           )}
           {showDesktopRailLine ? (
             <div
@@ -601,6 +612,11 @@ function RouteCardInner({
       value: 'stable_first',
       label: tr('稳定优先'),
       description: getRouteRoutingStrategyDescription('stable_first'),
+    },
+    {
+      value: 'cheapest',
+      label: tr('价格最低'),
+      description: getRouteRoutingStrategyDescription('cheapest'),
     },
   ] as const;
 
@@ -1169,13 +1185,18 @@ function RouteCardInner({
               >
                 {priorityBuckets.map((bucket, bucketIndex) => {
                   const railSection = priorityRailSections[bucketIndex];
-                  const railLabel = `P${bucketIndex} · ${bucket.channels.length}`;
-                  const mobileRailLabel = `${railLabel} ${tr('通道')}`;
-                  const railNodeStyle = buildPriorityRailNodeStyle(bucketIndex, false);
+                  const railLabel = `P${bucketIndex}`;
+                  const mobileRailLabel = railLabel;
+                  const railNodeStyle = buildPriorityRailNodeStyle(
+                    bucketIndex,
+                    false,
+                    bucket.channels.some((channel) => isChannelRecentlyUnavailable(channel)),
+                  );
                   const showStandaloneCompactRailHeader = compact && detailPanel;
                   const showNewLayerTarget = activeDragChannelId != null
                     && !readOnlyRoute
-                    && (!compact || detailPanel);
+                    && (!compact || detailPanel)
+                    && bucketIndex === priorityBuckets.length - 1;
 
                   return (
                     <Fragment key={`${route.id}-priority-bucket-${bucket.priority}-${bucketIndex}`}>
@@ -1212,7 +1233,7 @@ function RouteCardInner({
                             onDeleteChannel={onDeleteChannel}
                             onToggleChannelEnabled={onToggleChannelEnabled}
                             onSiteBlockModel={onSiteBlockModel}
-                            railLabel={railSection ? `P${bucketIndex} · ${railSection.channelCount}` : railLabel}
+                            railLabel={railSection ? `P${bucketIndex}` : railLabel}
                             mobileRailLabel={mobileRailLabel}
                             railNodeStyle={railNodeStyle}
                             showCompactRailHeader={!showStandaloneCompactRailHeader && channelIndex === 0}

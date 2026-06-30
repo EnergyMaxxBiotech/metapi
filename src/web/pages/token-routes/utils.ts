@@ -182,24 +182,27 @@ export function buildSourceGroupKey(routeId: number, sourceModel: string): strin
   return `${routeId}::${normalizedSourceModel}`;
 }
 
-export function getPriorityTagStyle(priority: number): CSSProperties {
-  if (priority <= 0) {
-    return {
-      background: 'color-mix(in srgb, var(--color-success) 16%, transparent)',
-      color: 'var(--color-success)',
-    };
-  }
+export function isChannelRecentlyUnavailable(channel: Pick<RouteChannel, 'cooldownUntil' | 'lastFailAt' | 'lastUsedAt' | 'lastSelectedAt'>): boolean {
+  const nowIso = new Date().toISOString();
+  if (channel.cooldownUntil && channel.cooldownUntil > nowIso) return true;
+  const lastFailAt = channel.lastFailAt || null;
+  if (!lastFailAt) return false;
+  const lastHealthyAt = channel.lastUsedAt || channel.lastSelectedAt || null;
+  return !lastHealthyAt || lastFailAt >= lastHealthyAt;
+}
 
-  if (priority === 1) {
+export function getPriorityTagStyle(priority: number, unavailable = false): CSSProperties {
+  void priority;
+  if (unavailable) {
     return {
-      background: 'color-mix(in srgb, var(--color-info) 16%, transparent)',
-      color: 'var(--color-info)',
+      background: 'color-mix(in srgb, var(--color-danger) 16%, transparent)',
+      color: 'var(--color-danger)',
     };
   }
 
   return {
-    background: 'rgba(100,116,139,0.18)',
-    color: 'var(--color-text-secondary)',
+    background: 'color-mix(in srgb, var(--color-success) 16%, transparent)',
+    color: 'var(--color-success)',
   };
 }
 

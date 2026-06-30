@@ -491,6 +491,112 @@ describe('accounts credential mode', { timeout: 15_000 }, () => {
     expect(JSON.parse(updated?.extraConfig || '{}')).not.toHaveProperty('proxyUrl');
   });
 
+  it('persists default API key billing multiplier from account updates', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'Billing Multiplier Site',
+      url: 'https://billing-multiplier.example.com',
+      platform: 'new-api',
+    }).returning().get();
+    const account = await db.insert(schema.accounts).values({
+      siteId: site.id,
+      username: 'billing-user',
+      accessToken: 'access-token',
+      apiToken: 'sk-default-key',
+      status: 'active',
+    }).returning().get();
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/accounts/${account.id}`,
+      payload: {
+        apiTokenBillingMultiplier: 1.75,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const refreshed = await db.select()
+      .from(schema.accounts)
+      .where(eq(schema.accounts.id, account.id))
+      .get();
+    expect(refreshed?.apiTokenBillingMultiplier).toBe(1.75);
+  });
+
+  it('reprioritizes cheapest routes when default API key billing multiplier changes', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'Default Key Reorder Site',
+      url: 'https://default-key-reorder.example.com',
+      platform: 'new-api',
+    }).returning().get();
+    const accountA = await db.insert(schema.accounts).values({
+      siteId: site.id,
+      username: 'default-key-a',
+      accessToken: '',
+      apiToken: 'sk-default-a',
+      status: 'active',
+      unitCost: 1,
+      apiTokenBillingMultiplier: 2,
+    }).returning().get();
+    const siteB = await db.insert(schema.sites).values({
+      name: 'Default Key Reorder Site B',
+      url: 'https://default-key-reorder-b.example.com',
+      platform: 'new-api',
+    }).returning().get();
+    const accountB = await db.insert(schema.accounts).values({
+      siteId: siteB.id,
+      username: 'default-key-b',
+      accessToken: '',
+      apiToken: 'sk-default-b',
+      status: 'active',
+      unitCost: 1,
+      apiTokenBillingMultiplier: 1,
+    }).returning().get();
+    const route = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-default-key-reorder',
+      routingStrategy: 'cheapest',
+      enabled: true,
+    }).returning().get();
+    const channelA = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: accountA.id,
+      tokenId: null,
+      sourceModel: 'gpt-5-default-key-reorder',
+      priority: 1,
+      weight: 10,
+      enabled: true,
+      manualOverride: false,
+    }).returning().get();
+    const channelB = await db.insert(schema.routeChannels).values({
+      routeId: route.id,
+      accountId: accountB.id,
+      tokenId: null,
+      sourceModel: 'gpt-5-default-key-reorder',
+      priority: 0,
+      weight: 10,
+      enabled: true,
+      manualOverride: false,
+    }).returning().get();
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/accounts/${accountA.id}`,
+      payload: {
+        apiTokenBillingMultiplier: 0.25,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const channels = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, route.id))
+      .all();
+    const byId = new Map(channels.map((channel) => [channel.id, channel]));
+
+    expect(byId.get(channelA.id)?.priority).toBe(0);
+    expect(byId.get(channelB.id)?.priority).toBe(1);
+    expect(byId.get(channelA.id)?.manualOverride).toBe(false);
+    expect(byId.get(channelB.id)?.manualOverride).toBe(false);
+  });
+
   it('does not refresh models for pin-only account edits', async () => {
     const site = await db.insert(schema.sites).values({
       name: 'Pinned Site',

@@ -155,6 +155,44 @@ describe('PUT /api/channels/batch', () => {
     expect(dbB?.manualOverride).toBe(true);
   });
 
+  it('assigns append-order priorities when batch adding channels', async () => {
+    const route = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-append-order',
+      enabled: true,
+    }).returning().get();
+    const accountIds: number[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const site = await db.insert(schema.sites).values({
+        name: `append-site-${index}`,
+        url: `https://append-${index}.example.com`,
+        platform: 'new-api',
+      }).returning().get();
+      const account = await db.insert(schema.accounts).values({
+        siteId: site.id,
+        username: `append-user-${index}`,
+        accessToken: `append-access-${index}`,
+      }).returning().get();
+      accountIds.push(account.id);
+    }
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/routes/${route.id}/channels/batch`,
+      payload: {
+        channels: accountIds.map((accountId) => ({ accountId })),
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ success: true, created: 3, skipped: 0 });
+
+    const channels = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, route.id))
+      .all();
+    expect(channels.map((channel) => channel.priority).sort((a, b) => a - b)).toEqual([0, 1, 2]);
+    expect(channels.every((channel) => channel.manualOverride === true)).toBe(true);
+  });
+
   it('reports the number of routes actually updated in route batch operations', async () => {
     const route = await db.insert(schema.tokenRoutes).values({
       modelPattern: 'gpt-4o-mini',

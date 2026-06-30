@@ -13,6 +13,7 @@ import {
   normalizeRouteRoutingStrategy,
   type RouteRoutingStrategy,
 } from '../../services/routeRoutingStrategy.js';
+import { reprioritizeRouteChannelsByStrategy } from '../../services/routePriorityRebuildService.js';
 import { invalidateTokenRouterCache, matchesModelPattern, tokenRouter } from '../../services/tokenRouter.js';
 import { appendBackgroundTaskLog, startBackgroundTask } from '../../services/backgroundTaskService.js';
 import {
@@ -66,6 +67,34 @@ function sendTokenRouteRateLimit(reply: FastifyReply, error: unknown): void {
   const retryAfterSec = Math.max(1, Math.ceil((retryState?.msBeforeNext ?? 60_000) / 1000));
   reply.code(429).header('retry-after', String(retryAfterSec))
     .send({ success: false, message: '请求过于频繁，请稍后再试' });
+}
+
+function createRouteChannelPriorityAllocator(channels: Array<{ priority?: number | null }>) {
+  const used = new Set<number>();
+  for (const channel of channels) {
+    const priority = Number(channel.priority ?? 0);
+    if (Number.isFinite(priority) && priority >= 0) {
+      used.add(Math.trunc(priority));
+    }
+  }
+
+  return {
+    next(): number {
+      let priority = 0;
+      while (used.has(priority)) priority += 1;
+      used.add(priority);
+      return priority;
+    },
+    reserve(priority: number): void {
+      if (Number.isFinite(priority) && priority >= 0) {
+        used.add(Math.trunc(priority));
+      }
+    },
+  };
+}
+
+function getNextRouteChannelPriority(channels: Array<{ priority?: number | null }>): number {
+  return createRouteChannelPriorityAllocator(channels).next();
 }
 
 function isExactModelPattern(modelPattern: string): boolean {
@@ -385,7 +414,10 @@ async function getMatchedExactRouteChannelCandidates(modelPattern: string): Prom
 }
 
 async function populateRouteChannelsByModelPattern(routeId: number, modelPattern: string): Promise<number> {
-  const routeCandidates = await getMatchedExactRouteChannelCandidates(modelPattern);
+  const routeCandidates = (await getMatchedExactRouteChannelCandidates(modelPattern)).map((candidate) => ({
+    ...candidate,
+    priorityMode: 'preserve' as const,
+  }));
   const availabilityCandidates = (await getPatternTokenCandidates(modelPattern)).map((candidate) => ({
     tokenId: candidate.tokenId,
     accountId: candidate.accountId,
@@ -394,6 +426,7 @@ async function populateRouteChannelsByModelPattern(routeId: number, modelPattern
     weight: 10,
     enabled: true,
     manualOverride: false,
+    priorityMode: 'append' as const,
   }));
   const candidates = [...routeCandidates, ...availabilityCandidates];
   if (candidates.length === 0) return 0;
@@ -411,21 +444,24 @@ async function populateRouteChannelsByModelPattern(routeId: number, modelPattern
   );
 
   let created = 0;
+  const priorityAllocator = createRouteChannelPriorityAllocator(existingChannels);
   for (const candidate of candidates) {
     const tokenId = typeof candidate.tokenId === 'number' && Number.isFinite(candidate.tokenId) ? candidate.tokenId : 0;
     const pairKey = `${candidate.accountId}::${tokenId}::${candidate.sourceModel.trim().toLowerCase()}`;
     if (existingPairs.has(pairKey)) continue;
+    const priority = candidate.priorityMode === 'preserve' ? candidate.priority : priorityAllocator.next();
     await db.insert(schema.routeChannels).values({
       routeId,
       accountId: candidate.accountId,
       tokenId: candidate.tokenId,
       sourceModel: candidate.sourceModel,
-      priority: candidate.priority,
+      priority,
       weight: candidate.weight,
       enabled: candidate.enabled,
       manualOverride: candidate.manualOverride,
     }).run();
     existingPairs.add(pairKey);
+    priorityAllocator.reserve(priority);
     created += 1;
   }
 
@@ -886,6 +922,7 @@ export async function tokensRoutes(app: FastifyInstance) {
 
     let created = 0;
     let skipped = 0;
+    const priorityAllocator = createRouteChannelPriorityAllocator(existingChannels);
     const errors: string[] = [];
 
     for (const item of body.channels) {
@@ -912,7 +949,7 @@ export async function tokensRoutes(app: FastifyInstance) {
           accountId: item.accountId,
           tokenId: effectiveTokenId,
           sourceModel: sourceModel || null,
-          priority: 0,
+          priority: priorityAllocator.next(),
           weight: 10,
           manualOverride: true,
         }).run();
@@ -1141,12 +1178,22 @@ export async function tokensRoutes(app: FastifyInstance) {
         sourceRouteIds,
         targetStrategy: normalizedRoutingStrategy,
       });
+      const reprioritizedRouteIds = await reprioritizeRouteChannelsByStrategy(syncedRouteIds, normalizedRoutingStrategy);
       if (syncedRouteIds.length > 0) {
         await clearRouteDecisionSnapshots(syncedRouteIds);
         await clearDependentExplicitGroupSnapshotsBySourceRouteIds(syncedRouteIds);
       }
+      if (reprioritizedRouteIds.length > 0) {
+        await clearRouteDecisionSnapshots(reprioritizedRouteIds);
+        await clearDependentExplicitGroupSnapshotsBySourceRouteIds(reprioritizedRouteIds);
+      }
     } else {
       await populateRouteChannelsByModelPattern(route.id, modelPattern);
+      const reprioritizedRouteIds = await reprioritizeRouteChannelsByStrategy([route.id], normalizedRoutingStrategy);
+      if (reprioritizedRouteIds.length > 0) {
+        await clearRouteDecisionSnapshots(reprioritizedRouteIds);
+        await clearDependentExplicitGroupSnapshotsBySourceRouteIds(reprioritizedRouteIds);
+      }
     }
     invalidateTokenRouterCache();
     return await getRouteWithSources(routeId);
@@ -1234,6 +1281,15 @@ export async function tokensRoutes(app: FastifyInstance) {
     if (routeMode === 'pattern' && modelPatternChanged) {
       await rebuildAutomaticRouteChannelsByModelPattern(id, nextModelPattern);
     }
+    const priorityPresetRouteIds = routeMode === 'explicit_group' ? syncedSourceRouteIds : [id];
+    const shouldApplyStrategyPriorityPreset = (
+      body.routingStrategy !== undefined
+      || modelPatternChanged
+      || (routeMode === 'explicit_group' && body.sourceRouteIds !== undefined)
+    );
+    const reprioritizedRouteIds = shouldApplyStrategyPriorityPreset
+      ? await reprioritizeRouteChannelsByStrategy(priorityPresetRouteIds, nextRoutingStrategy)
+      : [];
     if (routeBehaviorChanged) {
       await clearRouteDecisionSnapshot(id);
       await clearDependentExplicitGroupSnapshotsBySourceRouteIds([id]);
@@ -1241,6 +1297,10 @@ export async function tokensRoutes(app: FastifyInstance) {
     if (syncedSourceRouteIds.length > 0) {
       await clearRouteDecisionSnapshots(syncedSourceRouteIds);
       await clearDependentExplicitGroupSnapshotsBySourceRouteIds(syncedSourceRouteIds);
+    }
+    if (reprioritizedRouteIds.length > 0) {
+      await clearRouteDecisionSnapshots(reprioritizedRouteIds);
+      await clearDependentExplicitGroupSnapshotsBySourceRouteIds(reprioritizedRouteIds);
     }
     invalidateTokenRouterCache();
     return await getRouteWithSources(id);
@@ -1329,9 +1389,10 @@ export async function tokensRoutes(app: FastifyInstance) {
       return reply.code(400).send({ success: false, message: '该令牌不支持当前模型' });
     }
 
-    const duplicate = (await db.select().from(schema.routeChannels)
+    const existingChannels = await db.select().from(schema.routeChannels)
       .where(eq(schema.routeChannels.routeId, routeId))
-      .all())
+      .all();
+    const duplicate = existingChannels
       .some((channel) =>
         channel.accountId === body.accountId
         && (channel.tokenId ?? null) === (body.tokenId ?? null)
@@ -1346,7 +1407,7 @@ export async function tokensRoutes(app: FastifyInstance) {
       accountId: body.accountId,
       tokenId: body.tokenId,
       sourceModel: sourceModel || null,
-      priority: body.priority ?? 0,
+      priority: body.priority ?? getNextRouteChannelPriority(existingChannels),
       weight: body.weight ?? 10,
     }).run();
     const channelId = requireInsertedRowId(insertedChannel, '创建通道失败');

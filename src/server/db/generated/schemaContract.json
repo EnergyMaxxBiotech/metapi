@@ -67,6 +67,12 @@
           "notNull": true,
           "defaultValue": "'ready'",
           "primaryKey": false
+        },
+        "billing_multiplier": {
+          "logicalType": "real",
+          "notNull": false,
+          "defaultValue": "1",
+          "primaryKey": false
         }
       }
     },
@@ -202,6 +208,12 @@
           "logicalType": "text",
           "notNull": false,
           "defaultValue": null,
+          "primaryKey": false
+        },
+        "api_token_billing_multiplier": {
+          "logicalType": "real",
+          "notNull": false,
+          "defaultValue": "1",
           "primaryKey": false
         }
       }

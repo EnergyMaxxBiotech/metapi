@@ -23,6 +23,7 @@ const accountUpdatePayloadSchema = z.object({
   status: z.string().optional(),
   checkinEnabled: z.boolean().optional(),
   unitCost: z.union([z.number(), z.null()]).optional(),
+  apiTokenBillingMultiplier: z.union([z.number().finite().positive(), z.null()]).optional(),
   extraConfig: z.union([z.string(), z.record(z.string(), z.unknown()), z.null()]).optional(),
   refreshToken: z.union([z.string(), z.null()]).optional(),
   tokenExpiresAt: z.union([z.number(), z.string(), z.null()]).optional(),
@@ -104,6 +105,9 @@ function formatAccountsPayloadError(error: z.ZodError): string {
   }
   if (firstPath === 'unitCost') {
     return 'Invalid unitCost. Expected number or null.';
+  }
+  if (firstPath === 'apiTokenBillingMultiplier') {
+    return 'Invalid apiTokenBillingMultiplier. Expected positive number or null.';
   }
   if (firstPath === 'credentialMode') {
     return 'Invalid credentialMode. Expected auto/session/apikey.';

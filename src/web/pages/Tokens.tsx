@@ -97,6 +97,18 @@ const resolveAccountLabel = (result: AccountTokenSyncResult | null | undefined) 
   return '未知账号';
 };
 
+function parseOptionalPositiveNumberInput(value: string): number | null | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function formatBillingMultiplier(value: unknown): string {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : '1';
+}
+
 async function copyText(text: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -125,6 +137,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange }: Token
     group: 'default',
     unlimitedQuota: true,
     remainQuota: '',
+    billingMultiplier: '',
     expiredTime: '',
     allowIps: '',
   };
@@ -160,6 +173,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange }: Token
     name: '',
     token: '',
     group: 'default',
+    billingMultiplier: '',
     enabled: true,
     isDefault: false,
   });
@@ -491,6 +505,10 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange }: Token
       name: token?.name || '',
       token: '',
       group: (token?.tokenGroup || '').trim() || 'default',
+      billingMultiplier:
+        token?.billingMultiplier === null || token?.billingMultiplier === undefined
+          ? ''
+          : String(token.billingMultiplier),
       enabled: isMaskedPendingToken(token) ? true : token?.enabled !== false,
       isDefault: !!token?.isDefault,
     });
@@ -530,6 +548,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange }: Token
       name: '',
       token: '',
       group: 'default',
+      billingMultiplier: '',
       enabled: true,
       isDefault: false,
     });
@@ -541,12 +560,18 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange }: Token
       toast.error('请粘贴完整明文 token 后再保存');
       return;
     }
+    const billingMultiplier = parseOptionalPositiveNumberInput(editForm.billingMultiplier);
+    if (billingMultiplier === undefined) {
+      toast.error('上游密钥计费倍率必须为正数');
+      return;
+    }
     setSavingEdit(true);
     try {
       await api.updateAccountToken(editingToken.id, {
         name: editForm.name.trim() || editingToken.name,
         token: editForm.token.trim() || undefined,
         group: editForm.group || 'default',
+        billingMultiplier,
         enabled: editForm.enabled,
         isDefault: editForm.isDefault,
       });
@@ -595,6 +620,11 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange }: Token
 
   const handleAddToken = async () => {
     if (!form.accountId) return;
+    const billingMultiplier = parseOptionalPositiveNumberInput(form.billingMultiplier);
+    if (billingMultiplier === undefined) {
+      toast.error('上游密钥计费倍率必须为正数');
+      return;
+    }
     if (!form.unlimitedQuota) {
       const remainQuota = Number.parseInt(form.remainQuota, 10);
       if (!Number.isFinite(remainQuota) || remainQuota <= 0) {
@@ -613,6 +643,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange }: Token
         group: form.group || 'default',
         unlimitedQuota: form.unlimitedQuota,
         remainQuota,
+        billingMultiplier,
         expiredTime: form.expiredTime || undefined,
         allowIps: form.allowIps,
       });
@@ -982,6 +1013,15 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange }: Token
                     disabled={editGroupLoading}
                   />
                 </div>
+                <div>
+                  <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 6 }}>计费倍率</div>
+                  <input
+                    placeholder="上游密钥计费倍率"
+                    value={editForm.billingMultiplier}
+                    onChange={(e) => setEditForm((prev) => ({ ...prev, billingMultiplier: e.target.value }))}
+                    style={inputStyle}
+                  />
+                </div>
                 <div style={{ gridColumn: '1 / -1' }}>
                   <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 6 }}>令牌值</div>
                   <textarea
@@ -1116,6 +1156,15 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange }: Token
               disabled={!form.accountId || groupLoading}
             />
           </div>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 6 }}>计费倍率</div>
+            <input
+              value={form.billingMultiplier}
+              onChange={(e) => setForm((prev) => ({ ...prev, billingMultiplier: e.target.value }))}
+              placeholder="上游密钥计费倍率"
+              style={inputStyle}
+            />
+          </div>
           <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--color-text-secondary)' }}>
               <input
@@ -1225,6 +1274,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange }: Token
                   >
                     <MobileField label="账号" value={token.account?.username || `account-${token.accountId}`} />
                     <MobileField label="分组" value={token.tokenGroup || 'default'} />
+                    <MobileField label="计费倍率" value={`x${formatBillingMultiplier(token.billingMultiplier)}`} />
                     <MobileField
                       label="状态"
                       value={(
@@ -1321,6 +1371,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange }: Token
                 <th>来源站点</th>
                 <th>账号</th>
                 <th>分组</th>
+                <th>计费倍率</th>
                 <th>状态</th>
                 <th>默认</th>
                 <th>更新时间</th>
@@ -1374,6 +1425,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange }: Token
                     </td>
                     <td>{token.account?.username || `account-${token.accountId}`}</td>
                     <td>{token.tokenGroup || 'default'}</td>
+                    <td style={{ fontVariantNumeric: 'tabular-nums' }}>x{formatBillingMultiplier(token.billingMultiplier)}</td>
                     <td>
                       {isPending ? (
                         <span className="badge badge-warning" style={{ fontSize: 11 }}>待补全</span>

@@ -10,6 +10,7 @@ type AccountUpdateWorkflowInput = {
   updates: Partial<typeof schema.accounts.$inferInsert>;
   preferredApiToken?: string | null;
   refreshModels: boolean;
+  rebuildRoutes?: boolean;
   preserveExpiredStatus?: boolean;
   allowInactiveModelRefresh?: boolean;
   reactivateAfterSuccessfulModelRefresh?: boolean;
@@ -56,8 +57,10 @@ export async function applyAccountUpdateWorkflow(input: AccountUpdateWorkflowInp
       .run();
   }
 
-  const shouldRebuildRoutes = !isExpiredApiKeyRecoveryFlow
-    || convergence.modelRefreshResult?.status === 'success';
+  const shouldRebuildRoutes = input.rebuildRoutes !== false && (
+    !isExpiredApiKeyRecoveryFlow
+    || convergence.modelRefreshResult?.status === 'success'
+  );
   if (shouldRebuildRoutes) {
     await rebuildRoutesBestEffort();
   }

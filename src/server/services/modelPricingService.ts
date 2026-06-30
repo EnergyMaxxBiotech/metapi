@@ -90,7 +90,7 @@ interface ModelGroupPricing {
   perCallTotal?: number;
 }
 
-interface ModelPricingCatalogEntry {
+export interface ModelPricingCatalogEntry {
   modelName: string;
   quotaType: number;
   modelDescription: string | null;
@@ -101,7 +101,7 @@ interface ModelPricingCatalogEntry {
   groupPricing: Record<string, ModelGroupPricing>;
 }
 
-interface ModelPricingCatalog {
+export interface ModelPricingCatalog {
   models: ModelPricingCatalogEntry[];
   groupRatio: Record<string, number>;
 }

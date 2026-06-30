@@ -31,6 +31,28 @@ describe('failureReasonService', () => {
     expect(result.category).toBe('auth');
   });
 
+  it('does not classify upstream request, capability, or billing failures as token expiration', () => {
+    const requestValidation = classifyFailureReason({
+      message: "Error code: 400 - {'error': {'code': 'invalid_argument', 'message': 'input token limit is 202752', 'type': 'invalid_request_error'}}",
+      status: 'failed',
+      httpStatus: 400,
+    });
+    const unsupportedModel = classifyFailureReason({
+      message: 'HTTP 401 - Model minimax-m3-free is not supported for format openai',
+      status: 'failed',
+      httpStatus: 401,
+    });
+    const billing = classifyFailureReason({
+      message: 'HTTP 401 - No payment method. Add a payment method here: https://example.com/billing',
+      status: 'failed',
+      httpStatus: 401,
+    });
+
+    expect(requestValidation.code).not.toBe('token_expired');
+    expect(unsupportedModel.code).not.toBe('token_expired');
+    expect(billing.code).not.toBe('token_expired');
+  });
+
   it('classifies already checked in as state info', () => {
     const result = classifyFailureReason({
       message: '今天已经签到过啦',

@@ -85,6 +85,45 @@ describe('rebuildTokenRoutesFromAvailability', () => {
     expect(channels[0]?.manualOverride).toBe(false);
   });
 
+  it('assigns dense priorities when rebuilding multiple channels for a new route', async () => {
+    const modelName = 'gpt-5.2-priority-order';
+    for (let index = 0; index < 3; index += 1) {
+      const site = await db.insert(schema.sites).values({
+        name: `priority-site-${index}`,
+        url: `https://priority-${index}.example.com`,
+        platform: 'new-api',
+      }).returning().get();
+      const account = await db.insert(schema.accounts).values({
+        siteId: site.id,
+        username: `priority-user-${index}`,
+        accessToken: '',
+        apiToken: `sk-priority-${index}`,
+        status: 'active',
+        extraConfig: JSON.stringify({ credentialMode: 'apikey' }),
+      }).returning().get();
+      await db.insert(schema.modelAvailability).values({
+        accountId: account.id,
+        modelName,
+        available: true,
+        latencyMs: 100 + index,
+        checkedAt: '2026-03-08T08:00:00.000Z',
+      }).run();
+    }
+
+    await rebuildTokenRoutesFromAvailability();
+
+    const route = await db.select().from(schema.tokenRoutes)
+      .where(eq(schema.tokenRoutes.modelPattern, modelName))
+      .get();
+    expect(route).toBeDefined();
+
+    const channels = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, route!.id))
+      .all();
+
+    expect(channels.map((channel) => channel.priority).sort((a, b) => a - b)).toEqual([0, 1, 2]);
+  });
+
   it('ignores hidden account_tokens for direct apikey connections when rebuilding routes', async () => {
     const site = await db.insert(schema.sites).values({
       name: 'apikey-legacy-site',

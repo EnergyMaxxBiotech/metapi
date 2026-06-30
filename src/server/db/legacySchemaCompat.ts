@@ -4,6 +4,11 @@ import {
   type AccountTokenSchemaInspector,
 } from './accountTokenSchemaCompatibility.js';
 import {
+  CREDENTIAL_BILLING_COLUMN_COMPATIBILITY_SPECS,
+  ensureCredentialBillingSchemaCompatibility,
+  type CredentialBillingSchemaInspector,
+} from './credentialBillingSchemaCompatibility.js';
+import {
   ensureProxyFileSchemaCompatibility,
   PROXY_FILE_COLUMN_COMPATIBILITY_SPECS,
   PROXY_FILE_INDEX_COMPATIBILITY_SPECS,
@@ -35,6 +40,7 @@ export interface LegacySchemaCompatInspector extends
   RouteGroupingSchemaInspector,
   ProxyFileSchemaInspector,
   AccountTokenSchemaInspector,
+  CredentialBillingSchemaInspector,
   SharedIndexSchemaInspector {}
 
 const BOOTSTRAP_OWNED_LEGACY_TABLES = [
@@ -97,6 +103,7 @@ const LEGACY_COMPAT_TABLES = new Set([
 const LEGACY_COMPAT_COLUMNS = new Set([
   ...SITE_COLUMN_COMPATIBILITY_SPECS.map((spec) => `sites.${spec.column}`),
   ...ACCOUNT_TOKEN_COLUMN_COMPATIBILITY_SPECS.map((spec) => `${spec.table}.${spec.column}`),
+  ...CREDENTIAL_BILLING_COLUMN_COMPATIBILITY_SPECS.map((spec) => `${spec.table}.${spec.column}`),
   ...ROUTE_GROUPING_COLUMN_COMPATIBILITY_SPECS.map((spec) => `${spec.table}.${spec.column}`),
   ...PROXY_FILE_COLUMN_COMPATIBILITY_SPECS.map((spec) => `${spec.table}.${spec.column}`),
   ...BOOTSTRAP_OWNED_LEGACY_COLUMNS,
@@ -189,5 +196,6 @@ export async function ensureLegacySchemaCompatibility(inspector: LegacySchemaCom
   await ensureRouteGroupingSchemaCompatibility(wrappedInspector);
   await ensureProxyFileSchemaCompatibility(wrappedInspector);
   await ensureAccountTokenSchemaCompatibility(wrappedInspector);
+  await ensureCredentialBillingSchemaCompatibility(wrappedInspector);
   await ensureSharedIndexSchemaCompatibility(wrappedInspector);
 }

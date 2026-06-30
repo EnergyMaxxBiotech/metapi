@@ -28,7 +28,7 @@ function buildChannel(id: number, priority: number): RouteChannel {
 }
 
 describe('priority bucket helpers', () => {
-  it('groups duplicate priorities into the same bucket', () => {
+  it('renders duplicate priorities as one channel per visible bucket', () => {
     const buckets = buildPriorityBuckets([
       buildChannel(1, 0),
       buildChannel(2, 0),
@@ -36,14 +36,19 @@ describe('priority bucket helpers', () => {
       buildChannel(4, 2),
     ]);
 
-    expect(buckets).toHaveLength(2);
-    expect(buckets[0]).toMatchObject({ priority: 0 });
-    expect(buckets[0].channels.map((channel) => channel.id)).toEqual([1, 2]);
-    expect(buckets[1]).toMatchObject({ priority: 2 });
-    expect(buckets[1].channels.map((channel) => channel.id)).toEqual([3, 4]);
+    expect(buckets).toHaveLength(4);
+    expect(buckets.map((bucket) => ({
+      priority: bucket.priority,
+      channelIds: bucket.channels.map((channel) => channel.id),
+    }))).toEqual([
+      { priority: 0, channelIds: [1] },
+      { priority: 1, channelIds: [2] },
+      { priority: 2, channelIds: [3] },
+      { priority: 3, channelIds: [4] },
+    ]);
   });
 
-  it('moves a channel across a separator and preserves duplicate priorities', () => {
+  it('moves a channel across a separator and assigns unique priorities', () => {
     const reordered = applyPriorityBucketDrag(
       [
         buildChannel(1, 0),
@@ -56,10 +61,10 @@ describe('priority bucket helpers', () => {
     );
 
     expect(reordered.map((channel) => ({ id: channel.id, priority: channel.priority }))).toEqual([
-      { id: 1, priority: 0 },
-      { id: 2, priority: 0 },
       { id: 3, priority: 0 },
-      { id: 4, priority: 1 },
+      { id: 1, priority: 1 },
+      { id: 2, priority: 2 },
+      { id: 4, priority: 3 },
     ]);
   });
 
@@ -78,10 +83,10 @@ describe('priority bucket helpers', () => {
 
     expect(reordered.map((channel) => ({ id: channel.id, priority: channel.priority }))).toEqual([
       { id: 1, priority: 0 },
-      { id: 2, priority: 0 },
-      { id: 3, priority: 0 },
-      { id: 4, priority: 1 },
-      { id: 5, priority: 1 },
+      { id: 2, priority: 1 },
+      { id: 3, priority: 2 },
+      { id: 4, priority: 3 },
+      { id: 5, priority: 4 },
     ]);
   });
 
@@ -98,7 +103,25 @@ describe('priority bucket helpers', () => {
     expect(reordered.map((channel) => ({ id: channel.id, priority: channel.priority }))).toEqual([
       { id: 1, priority: 0 },
       { id: 2, priority: 1 },
-      { id: 3, priority: 1 },
+      { id: 3, priority: 2 },
+    ]);
+  });
+
+  it('turns an all-P0 channel drag into dense priority layers', () => {
+    const reordered = applyPriorityBucketDrag(
+      [
+        buildChannel(1, 0),
+        buildChannel(2, 0),
+        buildChannel(3, 0),
+      ],
+      2,
+      1,
+    );
+
+    expect(reordered.map((channel) => ({ id: channel.id, priority: channel.priority }))).toEqual([
+      { id: 2, priority: 0 },
+      { id: 1, priority: 1 },
+      { id: 3, priority: 2 },
     ]);
   });
 });

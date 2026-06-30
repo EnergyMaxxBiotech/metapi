@@ -7,7 +7,7 @@ import {
   describeTokenBinding,
   resolveTokenBindingConnectionMode,
 } from './tokenBindingPresentation.js';
-import { getChannelDecisionState, getPriorityTagStyle, getProbabilityColor } from './utils.js';
+import { getChannelDecisionState, getPriorityTagStyle, getProbabilityColor, isChannelRecentlyUnavailable } from './utils.js';
 
 function getRouteUnitStrategyLabel(strategy: string | null | undefined): string {
   return strategy === 'stick_until_unavailable' ? '单个用到不可用再切' : '轮询';
@@ -104,6 +104,7 @@ export function SortableChannelRow({
     ? routeUnit.members.map((member) => formatRouteUnitMemberLabel(member)).join('、')
     : null;
   const routeUnitMemberSummaryText = routeUnitMemberSummary ? `成员：${routeUnitMemberSummary}` : null;
+  const priorityUnavailable = isChannelRecentlyUnavailable(channel);
 
   const [mobileDetailsOpen, setMobileDetailsOpen] = useState(false);
 
@@ -143,7 +144,7 @@ export function SortableChannelRow({
                     fontSize: 10,
                     fontWeight: 700,
                     letterSpacing: 0.1,
-                    ...getPriorityTagStyle(resolvedPriority),
+                    ...getPriorityTagStyle(resolvedPriority, priorityUnavailable),
                   }}
                 >
                   P{resolvedPriority}
@@ -385,7 +386,7 @@ export function SortableChannelRow({
               fontSize: 10,
               fontWeight: 700,
               letterSpacing: 0.1,
-              ...getPriorityTagStyle(resolvedPriority),
+              ...getPriorityTagStyle(resolvedPriority, priorityUnavailable),
             }}
           >
             P{resolvedPriority}

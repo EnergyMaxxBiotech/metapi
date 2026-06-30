@@ -98,6 +98,13 @@ function createRebindForm(platformUserId = "") {
   };
 }
 
+function parseOptionalPositiveNumberInput(value: string): number | null | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 function resolveConnectionsSegment(search: string): ConnectionsSegment {
   const rawSegment = new URLSearchParams(search).get("segment");
   if (rawSegment === "apikey" || rawSegment === "tokens") return rawSegment;
@@ -153,6 +160,7 @@ export default function Accounts() {
     unitCost: "",
     accessToken: "",
     apiToken: "",
+    apiTokenBillingMultiplier: "",
     isPinned: false,
     refreshToken: "",
     tokenExpiresAt: "",
@@ -947,6 +955,10 @@ export default function Accounts() {
           : String(account.unitCost),
       accessToken: account?.accessToken || "",
       apiToken: account?.apiToken || "",
+      apiTokenBillingMultiplier:
+        account?.apiTokenBillingMultiplier === null || account?.apiTokenBillingMultiplier === undefined
+          ? ""
+          : String(account.apiTokenBillingMultiplier),
       isPinned: !!account?.isPinned,
       refreshToken: managedAuth.refreshToken,
       tokenExpiresAt: managedAuth.tokenExpiresAt,
@@ -961,6 +973,11 @@ export default function Accounts() {
 
   const saveEditPanel = async () => {
     if (!editingAccount) return;
+    const apiTokenBillingMultiplier = parseOptionalPositiveNumberInput(editForm.apiTokenBillingMultiplier);
+    if (apiTokenBillingMultiplier === undefined) {
+      toast.error("默认 API Key 计费倍率必须为正数");
+      return;
+    }
     setSavingEdit(true);
     try {
       await api.updateAccount(editingAccount.id, {
@@ -972,6 +989,7 @@ export default function Accounts() {
           : null,
         accessToken: editForm.accessToken.trim(),
         apiToken: editForm.apiToken.trim() || null,
+        apiTokenBillingMultiplier,
         isPinned: editForm.isPinned,
         refreshToken: editForm.refreshToken.trim() || null,
         tokenExpiresAt: editForm.tokenExpiresAt.trim()
@@ -2686,6 +2704,17 @@ export default function Accounts() {
                     }))
                   }
                   style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
+                />
+                <input
+                  placeholder="默认 API Key 计费倍率"
+                  value={editForm.apiTokenBillingMultiplier}
+                  onChange={(e) =>
+                    setEditForm((prev) => ({
+                      ...prev,
+                      apiTokenBillingMultiplier: e.target.value,
+                    }))
+                  }
+                  style={inputStyle}
                 />
                 <input
                   placeholder="代理地址（可选，如 http://127.0.0.1:7890）"
